@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.egg-info/
+dist/
+.pytest_cache/
+.DS_Store
+
+# internal notes — never commit
+NOTES.md
+DESIGN.md
