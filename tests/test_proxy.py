@@ -165,6 +165,18 @@ def test_streaming_bytes_relayed():
     assert r.headers["content-type"] == "text/event-stream"
 
 
+def test_timing_logged_at_debug(caplog):
+    import logging
+
+    client, _up = make(Config(threshold_tokens=1_000_000))
+    with caplog.at_level(logging.DEBUG, logger="cliffcompaction"):
+        r = client.post("/v1/messages", json=a_body(a_session(2)))
+    assert r.status_code == 200
+    messages = [rec.message for rec in caplog.records if "timing:" in rec.message]
+    assert any("upstream_headers" in m for m in messages)
+    assert any("first_byte" in m for m in messages)
+
+
 def test_status_endpoint():
     client, _up = make(Config())
     r = client.get("/__cliff__/status")

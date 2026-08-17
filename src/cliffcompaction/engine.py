@@ -14,6 +14,7 @@ as base_cut + (sub_cut - (base_head + 1)).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -25,6 +26,12 @@ from .hashing import chain_hashes
 from .store import Entry, PrefixStore
 
 logger = logging.getLogger("cliffcompaction")
+
+
+def _summary_fingerprint(summary: dict) -> str:
+    content = summary.get("content", "")
+    text = content if isinstance(content, str) else json.dumps(content)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 
 def estimate_tokens(body: dict) -> int:
@@ -90,10 +97,11 @@ class Engine:
             ]
             ctx.modified = True
             logger.info(
-                "match: prefix depth %d/%d (head=%d)",
+                "match: prefix depth %d/%d (head=%d, summary#%s)",
                 entry.cut,
                 len(msgs),
                 entry.head_len,
+                _summary_fingerprint(entry.summary),
             )
             break
 
@@ -219,7 +227,7 @@ class Engine:
         )
         logger.info(
             "compact (%s): ~%dk -> ~%dk est tokens, %d -> %d messages, "
-            "%d chain step(s), stored@%d",
+            "%d chain step(s), stored@%d summary#%s",
             reason,
             before // 1000,
             ctx.est_tokens_out // 1000,
@@ -227,5 +235,6 @@ class Engine:
             len(working),
             n_compactions,
             orig_cut,
+            _summary_fingerprint(last_summary),
         )
         return True

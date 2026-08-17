@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -87,7 +88,7 @@ def create_app(
         req = client.build_request(request.method, url, headers=headers, content=body)
         return await client.send(req, stream=True)
 
-    def relay(resp: httpx.Response) -> StreamingResponse:
+    def relay(resp: httpx.Response, t_start: float | None = None) -> StreamingResponse:
         headers = {
             k: v
             for k, v in resp.headers.items()
@@ -95,12 +96,45 @@ def create_app(
         }
 
         async def body():
+            first = t_start is not None
+            n_bytes = 0
+            started = time.monotonic()
             try:
                 async for chunk in resp.aiter_raw():
+                    if first:
+                        logger.debug(
+                            "timing: first_byte %.0fms",
+                            (time.monotonic() - t_start) * 1000,
+                        )
+                        first = False
+                    n_bytes += len(chunk)
                     yield chunk
             except httpx.StreamConsumed:
                 # Content was already loaded (e.g. mock transports); serve it.
+                if first:
+                    logger.debug(
+                        "timing: first_byte %.0fms",
+                        (time.monotonic() - t_start) * 1000,
+                    )
                 yield resp.content
+            except Exception as exc:
+                # Mid-stream upstream failure: the client sees a truncated
+                # response; leave a trace so it is attributable.
+                logger.warning(
+                    "relay: upstream stream failed after %d bytes / %.1fs: %r",
+                    n_bytes,
+                    time.monotonic() - started,
+                    exc,
+                )
+                raise
+            except (GeneratorExit, BaseException):
+                # Client hung up (or task cancelled) while we were relaying.
+                logger.warning(
+                    "relay: client disconnected after %d bytes / %.1fs",
+                    n_bytes,
+                    time.monotonic() - started,
+                )
+                raise
 
         return StreamingResponse(
             body(),
@@ -110,7 +144,9 @@ def create_app(
         )
 
     async def handle(request: Request) -> Response:
+        t0 = time.monotonic()
         raw = await request.body()
+        t_read = time.monotonic()
         path = request.url.path
         upstream = pick_upstream(path)
         dialect = detect(path)
@@ -143,6 +179,7 @@ def create_app(
                 ctx = None
                 out_body = raw
 
+        t_prep = time.monotonic()
         try:
             resp = await send_upstream(request, upstream, out_body)
         except httpx.HTTPError as exc:
@@ -150,6 +187,28 @@ def create_app(
             return JSONResponse(
                 {"error": {"type": "upstream_error", "message": str(exc)}},
                 status_code=502,
+            )
+        logger.debug(
+            "access: %s %s -> %d (%.0fms)",
+            request.method,
+            path,
+            resp.status_code,
+            (time.monotonic() - t0) * 1000,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                "upstream returned %d for %s %s (relayed verbatim)",
+                resp.status_code,
+                request.method,
+                path,
+            )
+        if ctx is not None:
+            logger.debug(
+                "timing: read %.0fms, prepare %.0fms, upstream_headers %.0fms, status=%d",
+                (t_read - t0) * 1000,
+                (t_prep - t_read) * 1000,
+                (time.monotonic() - t_prep) * 1000,
+                resp.status_code,
             )
 
         # Reactive fallback: on a context-length 400, compact and replay once.
@@ -176,7 +235,7 @@ def create_app(
             }
             return Response(content=data, status_code=400, headers=headers)
 
-        return relay(resp)
+        return relay(resp, t_start=t0 if ctx is not None else None)
 
     async def status(_request: Request) -> JSONResponse:
         return JSONResponse(
