@@ -197,7 +197,7 @@ def create_app(
         )
         if resp.status_code >= 400:
             logger.warning(
-                "upstream returned %d for %s %s (relayed verbatim)",
+                "upstream returned %d for %s %s",
                 resp.status_code,
                 request.method,
                 path,
@@ -222,8 +222,21 @@ def create_app(
                             ctx.outgoing_body(), ensure_ascii=False
                         ).encode("utf-8")
                         logger.info("reactive: replaying compacted request")
+                        t_replay = time.monotonic()
                         resp2 = await send_upstream(request, upstream, retry_body)
-                        return relay(resp2)
+                        logger.debug(
+                            "access: %s %s -> %d (%.0fms, replay)",
+                            request.method,
+                            path,
+                            resp2.status_code,
+                            (time.monotonic() - t_replay) * 1000,
+                        )
+                        if resp2.status_code >= 400:
+                            logger.warning(
+                                "replay still failed: upstream returned %d",
+                                resp2.status_code,
+                            )
+                        return relay(resp2, t_start=t0)
                 except httpx.HTTPError as exc:
                     logger.error("upstream error on replay: %s", exc)
                 except Exception:
