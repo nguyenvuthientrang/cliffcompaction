@@ -7,6 +7,10 @@ import os
 from dataclasses import dataclass, field
 
 
+DEFAULT_ANTHROPIC_UPSTREAM = "https://api.anthropic.com"
+DEFAULT_OPENAI_UPSTREAM = "https://api.openai.com"
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, default))
@@ -51,8 +55,8 @@ class Config:
     # --- proxy behavior ---
     # Shadow mode: observe, hash, log — but never modify a request.
     shadow: bool = False
-    anthropic_upstream: str = "https://api.anthropic.com"
-    openai_upstream: str = "https://api.openai.com"
+    anthropic_upstream: str = DEFAULT_ANTHROPIC_UPSTREAM
+    openai_upstream: str = DEFAULT_OPENAI_UPSTREAM
     host: str = "127.0.0.1"
     port: int = 8399
 
@@ -74,10 +78,10 @@ class Config:
             thinking_max_chars=_env_int("CLIFF_THINKING_MAX_CHARS", 0),
             shadow=_env_bool("CLIFF_SHADOW", False),
             anthropic_upstream=os.environ.get(
-                "CLIFF_ANTHROPIC_UPSTREAM", "https://api.anthropic.com"
+                "CLIFF_ANTHROPIC_UPSTREAM", DEFAULT_ANTHROPIC_UPSTREAM
             ),
             openai_upstream=os.environ.get(
-                "CLIFF_OPENAI_UPSTREAM", "https://api.openai.com"
+                "CLIFF_OPENAI_UPSTREAM", DEFAULT_OPENAI_UPSTREAM
             ),
             host=os.environ.get("CLIFF_HOST", "127.0.0.1"),
             port=_env_int("CLIFF_PORT", 8399),

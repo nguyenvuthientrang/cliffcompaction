@@ -153,6 +153,27 @@ def test_upstream_routing():
     assert up.requests[-1].url.host == "anthropic.example"
 
 
+def test_leftover_paths_follow_single_configured_upstream():
+    # Only the OpenAI upstream configured: misc paths follow it.
+    cfg = Config(threshold_tokens=1_000_000, openai_upstream="https://openai.example")
+    client, up = make(cfg)
+    client.get("/v1/models")
+    assert up.requests[-1].url.host == "openai.example"
+    client.head("/api/hello")
+    assert up.requests[-1].url.host == "openai.example"
+    # Dialect paths still route by dialect.
+    client.post("/v1/messages", json=a_body(a_session(2)))
+    assert up.requests[-1].url.host == "api.anthropic.com"
+
+    # Only the Anthropic upstream configured: misc paths follow it (as before).
+    cfg = Config(threshold_tokens=1_000_000, anthropic_upstream="https://kimi.example")
+    client, up = make(cfg)
+    client.get("/v1/models")
+    assert up.requests[-1].url.host == "kimi.example"
+    client.post("/v1/messages/count_tokens", json=a_body(a_session(2)))
+    assert up.requests[-1].url.host == "kimi.example"
+
+
 def test_streaming_bytes_relayed():
     client, up = make(Config(threshold_tokens=1_000_000))
     sse = b'event: message_start\ndata: {"type":"message_start"}\n\nevent: done\ndata: {}\n\n'

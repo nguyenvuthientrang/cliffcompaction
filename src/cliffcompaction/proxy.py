@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from . import __version__
-from .config import Config
+from .config import DEFAULT_ANTHROPIC_UPSTREAM, DEFAULT_OPENAI_UPSTREAM, Config
 from .dialects import detect
 from .engine import Engine
 
@@ -71,7 +71,19 @@ def create_app(
     )
 
     def pick_upstream(path: str) -> str:
-        if path.rstrip("/").endswith("/chat/completions"):
+        p = path.rstrip("/")
+        if p.endswith("/chat/completions"):
+            return cfg.openai_upstream
+        if "/v1/messages" in p or p.endswith("/messages"):
+            return cfg.anthropic_upstream
+        # Neither dialect claims this path (/v1/models, /api/hello, ...) and
+        # the path alone cannot decide (/v1/models exists on both APIs).
+        # Follow the upstream the user explicitly configured when that is
+        # unambiguous; otherwise keep the Anthropic default.
+        if (
+            cfg.openai_upstream != DEFAULT_OPENAI_UPSTREAM
+            and cfg.anthropic_upstream == DEFAULT_ANTHROPIC_UPSTREAM
+        ):
             return cfg.openai_upstream
         return cfg.anthropic_upstream
 
