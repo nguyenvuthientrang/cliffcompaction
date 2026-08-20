@@ -205,3 +205,20 @@ def test_status_endpoint():
     data = r.json()
     assert data["name"] == "cliffcompaction"
     assert data["shadow"] is False
+
+
+def test_debug_dir_dumps_requests(tmp_path):
+    import os
+    cfg = Config(threshold_tokens=2_000, keep_recent=1, debug_dir=str(tmp_path))
+    client, up = make(cfg)
+    r = client.post("/v1/messages", json=a_body(a_session(10)))
+    assert r.status_code == 200
+    files = sorted(os.listdir(tmp_path))
+    assert len(files) == 1
+    rec = json.loads((tmp_path / files[0]).read_text())
+    assert rec["dialect"] == "anthropic"
+    assert rec["modified"] is True
+    assert len(rec["incoming_messages"]) == len(a_session(10))
+    assert rec["outgoing_messages"][1]["content"].startswith(SUMMARY_HEADER)
+    # upstream still got the compacted body — dump is observability only
+    assert len(up.last_messages()) == len(rec["outgoing_messages"])

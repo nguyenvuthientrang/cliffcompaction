@@ -7,8 +7,10 @@ forwards every request verbatim.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -65,6 +67,33 @@ def create_app(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> Starlette:
     engine = engine or Engine(cfg)
+    _debug_seq = itertools.count(1)
+
+    def debug_dump(path: str, dialect, ctx) -> None:
+        """Write what cliff saw and what it sent. Failures never propagate."""
+        try:
+            os.makedirs(cfg.debug_dir, exist_ok=True)
+            n = next(_debug_seq)
+            fname = os.path.join(
+                cfg.debug_dir,
+                f"{time.strftime('%Y%m%d-%H%M%S')}-{n:04d}.json",
+            )
+            record = {
+                "path": path,
+                "dialect": dialect.name,
+                "modified": ctx.modified,
+                "compacted": ctx.compacted,
+                "est_tokens_in": ctx.est_tokens_in,
+                "est_tokens_out": ctx.est_tokens_out,
+                "incoming_messages": ctx.msgs,
+                "outgoing_messages": ctx.substituted if ctx.modified else None,
+            }
+            with open(fname, "w") as f:
+                json.dump(record, f, ensure_ascii=False, indent=1)
+            logger.info("debug: dumped request to %s", fname)
+        except Exception:
+            logger.exception("debug dump failed (request unaffected)")
+
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=30.0),
         transport=transport,
@@ -72,7 +101,7 @@ def create_app(
 
     def pick_upstream(path: str) -> str:
         p = path.rstrip("/")
-        if p.endswith("/chat/completions"):
+        if p.endswith("/chat/completions") or p.endswith("/responses") or p.endswith("/responses/compact"):
             return cfg.openai_upstream
         if "/v1/messages" in p or p.endswith("/messages"):
             return cfg.anthropic_upstream
@@ -168,7 +197,7 @@ def create_app(
         if dialect is not None and request.method == "POST" and raw:
             try:
                 body = json.loads(raw)
-                msgs = body.get("messages") if isinstance(body, dict) else None
+                msgs = body.get(dialect.messages_key) if isinstance(body, dict) else None
                 if (
                     isinstance(msgs, list)
                     and msgs
@@ -190,6 +219,8 @@ def create_app(
                 logger.exception("prepare failed; passing through verbatim")
                 ctx = None
                 out_body = raw
+            if cfg.debug_dir and ctx is not None:
+                debug_dump(path, dialect, ctx)
 
         t_prep = time.monotonic()
         try:

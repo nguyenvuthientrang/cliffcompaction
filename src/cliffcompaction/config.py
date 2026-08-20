@@ -55,6 +55,10 @@ class Config:
     # --- proxy behavior ---
     # Shadow mode: observe, hash, log — but never modify a request.
     shadow: bool = False
+    # Debug dump directory: when set, every dialect-handled request is written
+    # there as JSON (incoming and outgoing message arrays). Observability
+    # only — dump failures never affect request handling.
+    debug_dir: str = ""
     anthropic_upstream: str = DEFAULT_ANTHROPIC_UPSTREAM
     openai_upstream: str = DEFAULT_OPENAI_UPSTREAM
     host: str = "127.0.0.1"
@@ -77,6 +81,7 @@ class Config:
             keep_thinking=_env_bool("CLIFF_KEEP_THINKING", True),
             thinking_max_chars=_env_int("CLIFF_THINKING_MAX_CHARS", 0),
             shadow=_env_bool("CLIFF_SHADOW", False),
+            debug_dir=os.environ.get("CLIFF_DEBUG_DIR", ""),
             anthropic_upstream=os.environ.get(
                 "CLIFF_ANTHROPIC_UPSTREAM", DEFAULT_ANTHROPIC_UPSTREAM
             ),

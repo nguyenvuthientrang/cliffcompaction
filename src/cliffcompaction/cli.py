@@ -45,6 +45,7 @@ def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--thinking-max-chars", type=int, help="cap on thinking text per summarized turn; 0 = unlimited (default), independent of --thought-max-chars")
     p.add_argument("--anthropic-upstream", help="Anthropic upstream base URL")
     p.add_argument("--openai-upstream", help="OpenAI-compatible upstream base URL")
+    p.add_argument("--debug-dir", help="dump each handled request's incoming/outgoing message arrays as JSON files here")
     p.add_argument("-v", "--verbose", action="store_true")
 
 
@@ -68,6 +69,8 @@ def _config_from_args(args: argparse.Namespace) -> Config:
         cfg.anthropic_upstream = args.anthropic_upstream
     if args.openai_upstream:
         cfg.openai_upstream = args.openai_upstream
+    if args.debug_dir:
+        cfg.debug_dir = args.debug_dir
     return cfg
 
 

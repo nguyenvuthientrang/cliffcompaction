@@ -77,6 +77,7 @@ Runs the full pipeline (hash, match, would-compact, log) but forwards every requ
 | `--anthropic-upstream` / `CLIFF_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | |
 | `--openai-upstream` / `CLIFF_OPENAI_UPSTREAM` | `https://api.openai.com` | |
 | `--shadow` / `CLIFF_SHADOW` | off | observe-only mode |
+| `--debug-dir` / `CLIFF_DEBUG_DIR` | off | dump each handled request's incoming/outgoing message arrays as JSON files |
 
 Supported dialects: **Anthropic Messages** (`/v1/messages`) and **OpenAI Chat Completions** (`/chat/completions`), native tool calling. Everything else passes through verbatim. Paths that match neither dialect (e.g. `/v1/models`) are forwarded to the Anthropic upstream — or to the OpenAI upstream when it is the only one you configured, so a single-provider OpenAI setup needs no extra flags.
 
