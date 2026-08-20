@@ -299,3 +299,61 @@ def test_turn_grouping_orphan_summary():
     # first group is the summary (non-assistant orphan), rest assistant-led
     assert turns[0][0]["content"].startswith(SUMMARY_HEADER)
     assert all(t[0]["role"] == "assistant" for t in turns[1:])
+
+
+def test_system_messages_never_precede_the_summary():
+    """A content-ful in-array system message may only precede an assistant
+    message or end the array. Head trimming must keep that invariant when
+    the user-role summary is injected (real incident: Claude Code session
+    with history [user, system, assistant, ...])."""
+    from cliffcompaction.dialects.anthropic import DIALECT as A
+
+    msgs = [
+        {"role": "user", "content": "the task"},
+        {"role": "system", "content": "directive: be careful"},
+    ]
+    for i in range(6):
+        msgs.append(
+            {"role": "assistant", "content": [
+                {"type": "text", "text": f"step {i}"},
+                {"type": "tool_use", "id": f"t{i}", "name": "bash", "input": {"command": f"make {i}"}},
+            ]}
+        )
+        msgs.append(
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": "R" * 2000}
+            ]}
+        )
+    res = compact(msgs, A, Config(keep_recent=2))
+    assert res is not None
+    # system message trimmed out of the head...
+    assert res.head_len == 1
+    assert res.messages[0]["role"] == "user"
+    assert res.messages[1]["content"].startswith(SUMMARY_HEADER)
+    # ...its content folded into the summary...
+    assert "system: directive: be careful" in res.messages[1]["content"]
+    # ...and the output violates no placement rule: every content-ful system
+    # message precedes an assistant message or ends the array.
+    for i, m in enumerate(res.messages):
+        if m.get("role") == "system" and m.get("content"):
+            assert i == len(res.messages) - 1 or res.messages[i + 1]["role"] == "assistant"
+
+
+def test_system_message_in_tail_and_directive_only_dropped():
+    from cliffcompaction.dialects.anthropic import DIALECT as A
+
+    msgs = [{"role": "user", "content": "task"}]
+    for i in range(5):
+        msgs.append({"role": "assistant", "content": f"step {i}"})
+        msgs.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "content": "R" * 1500}
+        ]})
+        if i == 1:
+            # directive-only system message mid-history (allowed anywhere)
+            msgs.append({"role": "system", "content": []})
+    res = compact(msgs, A, Config(keep_recent=2))
+    assert res is not None
+    text = res.messages[res.head_len]["content"]
+    assert "system:" not in text  # directive-only folds to nothing
+    # kept tail preserved verbatim
+    assert res.messages[-1] == msgs[-1]

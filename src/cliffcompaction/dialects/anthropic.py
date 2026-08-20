@@ -179,7 +179,28 @@ def summarize_message(msg: dict, cfg: Config) -> list[str]:
         return _summarize_assistant(msg, cfg)
     if msg.get("role") == "user":
         return _summarize_user(msg, cfg)
+    if msg.get("role") == "system":
+        # In-array system directives (modern clients inject them). Content-ful
+        # ones fold like instructions; directive-only forms (content: [])
+        # yield nothing and are dropped.
+        content = msg.get("content")
+        if isinstance(content, str):
+            text = content
+        else:
+            text = "\n".join(
+                b.get("text", "")
+                for b in (content or [])
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        text = text.strip()
+        if text:
+            return [f"system: {truncate(text, cfg.human_max_chars)}"]
+        return []
     return []
+
+
+def _is_system(msg: dict) -> bool:
+    return msg.get("role") == "system"
 
 
 def user_message(text: str) -> dict:
@@ -193,4 +214,7 @@ DIALECT = Dialect(
     summarize_message=summarize_message,
     user_message=user_message,
     is_summary_message=is_summary_message,
+    # A content-ful system message must precede an assistant message or end
+    # the array; it may not precede the injected user-role summary.
+    trim_from_head=_is_system,
 )

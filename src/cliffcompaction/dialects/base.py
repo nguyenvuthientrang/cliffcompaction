@@ -53,3 +53,17 @@ class Dialect:
     user_message: Callable[[str], dict]
     # True if this message IS a previously injected cliff summary.
     is_summary_message: Callable[[dict], bool]
+    # Request-body key holding the message list ("messages"; "input" for the
+    # Responses API).
+    messages_key: str = "messages"
+    # Optional dialect-specific turn grouping. None = the default rule (every
+    # assistant message starts a turn). Dialects where one model step spans
+    # several items (Responses: reasoning + message/function_call) override
+    # this so a step is never split across the keep_recent boundary.
+    group_turns: Callable[[list[dict]], list[list[dict]]] | None = None
+    # Optional predicate: True for messages that must not sit at the end of
+    # the verbatim head (the summary is inserted right after the head, and
+    # some message kinds may not precede a user message — Anthropic system
+    # messages must precede an assistant message or end the array). Matching
+    # messages are trimmed off the head into the compacted region.
+    trim_from_head: Callable[[dict], bool] | None = None

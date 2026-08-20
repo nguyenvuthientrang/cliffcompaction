@@ -21,7 +21,13 @@ def group_turns(body: list[dict], dialect: Dialect) -> list[list[dict]]:
     non-assistant messages (its observations). Leading non-assistant
     messages (e.g. a prior summary) form their own group so they can be
     dropped cleanly on re-compaction.
+
+    Dialects may override the boundary rule (dialect.group_turns) while
+    keeping the same contract: a partition of the input, in order, with
+    leading non-assistant messages in their own group.
     """
+    if dialect.group_turns is not None:
+        return dialect.group_turns(body)
     turns: list[list[dict]] = []
     current: list[dict] | None = None
     for msg in body:
@@ -51,8 +57,15 @@ def compact(messages: list[dict], dialect: Dialect, cfg: Config) -> CompactResul
     if first_assistant is None:
         return None
     head_len = first_assistant
-    # ...minus trailing summary messages (re-compaction must not absorb them).
-    while head_len > 0 and dialect.is_summary_message(messages[head_len - 1]):
+    # ...minus trailing summary messages (re-compaction must not absorb them)
+    # and messages that may not precede the injected user summary.
+    while head_len > 0 and (
+        dialect.is_summary_message(messages[head_len - 1])
+        or (
+            dialect.trim_from_head is not None
+            and dialect.trim_from_head(messages[head_len - 1])
+        )
+    ):
         head_len -= 1
 
     body = messages[head_len:]
