@@ -14,6 +14,7 @@ as base_cut + (sub_cut - (base_head + 1)).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 
 from .cliff import compact
 from .config import Config
-from .dialects.base import Dialect
+from .dialects.base import SUMMARY_HEADER, Dialect
 from .hashing import chain_hashes
 from .store import Entry, PrefixStore
 
@@ -54,6 +55,10 @@ class RequestCtx:
     substituted: list[dict] = field(default_factory=list)
     modified: bool = False  # substitution and/or compaction happened
     compacted: bool = False  # a compaction happened during prepare()
+    # Highest escalation rung applied to this request:
+    # 0 = base config only, 1 = keep_recent=1, 2 = +thought/thinking caps,
+    # 3 = summary truncated to fit (reactive only).
+    rung: int = 0
     est_tokens_in: int = 0
     est_tokens_out: int = 0
 
@@ -61,7 +66,7 @@ class RequestCtx:
         if not self.modified:
             return self.body
         out = dict(self.body)
-        out["messages"] = self.substituted
+        out[self.dialect.messages_key] = self.substituted
         return out
 
 
@@ -73,7 +78,7 @@ class Engine:
     # ------------------------------------------------------------- pipeline
 
     def prepare(self, body: dict, dialect: Dialect) -> RequestCtx:
-        msgs = body["messages"]
+        msgs = body[dialect.messages_key]
         digests = [dialect.digest_message(m) for m in msgs]
         chain = chain_hashes(digests)
         ctx = RequestCtx(body=body, dialect=dialect, msgs=msgs, chain=chain)
@@ -109,17 +114,130 @@ class Engine:
         ctx.est_tokens_out = estimate_tokens(ctx.outgoing_body())
         if ctx.est_tokens_out > self.cfg.threshold_tokens:
             self._compact_chain(ctx, reason="proactive")
+            # Escalate while still over budget: harsher knobs, cliff()
+            # semantics untouched. Truncation (rung 3) is reactive-only;
+            # proactively we stop at rung 2 and send over budget (soft) —
+            # oversized content ages into the compacted region next cycle.
+            for rung in (1, 2):
+                if ctx.est_tokens_out <= self.cfg.threshold_tokens:
+                    break
+                if self._compact_chain(
+                    ctx,
+                    reason=f"escalated rung{rung}",
+                    force=True,
+                    compact_cfg=self._rung_cfg(rung),
+                ):
+                    ctx.rung = rung
+            if ctx.compacted and ctx.est_tokens_out > self.cfg.threshold_tokens:
+                logger.info(
+                    "over budget after escalation (~%dk est > %dk); sending anyway",
+                    ctx.est_tokens_out // 1000,
+                    self.cfg.threshold_tokens // 1000,
+                )
         return ctx
 
     def reactive(self, ctx: RequestCtx) -> bool:
-        """Called on an upstream context-length error. Compact regardless of
-        threshold; returns True if the request should be replayed."""
-        if ctx.compacted:
-            # Already compacted this request and it still doesn't fit.
-            return False
-        return self._compact_chain(ctx, reason="reactive", force=True)
+        """Called on an upstream context-length error. Walks the escalation
+        ladder one rung per call; returns True if the request should be
+        replayed, False when out of options."""
+        if not ctx.compacted and ctx.rung == 0:
+            if self._compact_chain(ctx, reason="reactive", force=True):
+                return True
+        while ctx.rung < 3:
+            ctx.rung += 1
+            if ctx.rung < 3:
+                if self._compact_chain(
+                    ctx,
+                    reason=f"reactive rung{ctx.rung}",
+                    force=True,
+                    compact_cfg=self._rung_cfg(ctx.rung),
+                ):
+                    return True
+            else:
+                if self._truncate_summary(ctx):
+                    return True
+        return False
 
     # -------------------------------------------------------------- helpers
+
+    def _rung_cfg(self, rung: int) -> Config:
+        """Derived config for an escalation rung. Rung 1: minimal tail.
+        Rung 2: additionally the lean summary knobs."""
+        kw: dict = {"keep_recent": 1}
+        if rung >= 2:
+            cap = self.cfg.thought_max_chars
+            kw["thought_max_chars"] = 300 if cap <= 0 else min(cap, 300)
+            kw["keep_thinking"] = False
+        return dataclasses.replace(self.cfg, **kw)
+
+    @staticmethod
+    def _summary_text(msg: dict) -> str:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and isinstance(b.get("text"), str):
+                    return b["text"]
+        return ""
+
+    def _truncate_summary(self, ctx: RequestCtx) -> bool:
+        """Last-resort rung (reactive only): shrink the existing summary to
+        fit the threshold budget, keeping the NEWEST parts. Degenerates to a
+        header-only summary when no budget remains. Never touches the head
+        or the kept tail."""
+        if not ctx.compacted or ctx.base_cut <= 0:
+            return False
+        idx = ctx.base_head
+        old = ctx.substituted[idx]
+        text = self._summary_text(old)
+        if not text.startswith(SUMMARY_HEADER):
+            return False
+        others = [m for i, m in enumerate(ctx.substituted) if i != idx]
+        try:
+            fixed = len(
+                json.dumps(
+                    {**ctx.body, ctx.dialect.messages_key: others},
+                    ensure_ascii=False,
+                )
+            )
+        except (TypeError, ValueError):
+            return False
+        budget = self.cfg.threshold_tokens * 4 - fixed - len(SUMMARY_HEADER) - 64
+        parts = text[len(SUMMARY_HEADER):].strip().split("\n\n---\n\n")
+        kept: list[str] = []
+        used = 0
+        for part in reversed(parts):  # newest first
+            if used + len(part) > max(budget, 0):
+                break
+            kept.append(part)
+            used += len(part) + 9  # separator overhead
+        kept.reverse()
+        new_text = (
+            SUMMARY_HEADER + "\n\n" + "\n\n---\n\n".join(kept)
+            if kept
+            else SUMMARY_HEADER
+        )
+        if len(new_text) >= len(text):
+            return False  # nothing gained
+        new_summary = ctx.dialect.user_message(new_text)
+        ctx.substituted = [*ctx.substituted[:idx], new_summary, *ctx.substituted[idx + 1:]]
+        ctx.modified = True
+        before = ctx.est_tokens_out
+        ctx.est_tokens_out = estimate_tokens(ctx.outgoing_body())
+        self.store.put(
+            ctx.chain[ctx.base_cut - 1],
+            Entry(head_len=ctx.base_head, summary=new_summary, cut=ctx.base_cut),
+        )
+        logger.info(
+            "reactive rung3: summary truncated (%d -> %d parts, ~%dk -> ~%dk est tokens) summary#%s",
+            len(parts),
+            len(kept),
+            before // 1000,
+            ctx.est_tokens_out // 1000,
+            _summary_fingerprint(new_summary),
+        )
+        return True
 
     @staticmethod
     def _msg_chars(msg: dict) -> int:
@@ -128,7 +246,13 @@ class Engine:
         except (TypeError, ValueError):
             return 0
 
-    def _compact_chain(self, ctx: RequestCtx, reason: str, force: bool = False) -> bool:
+    def _compact_chain(
+        self,
+        ctx: RequestCtx,
+        reason: str,
+        force: bool = False,
+        compact_cfg: Config | None = None,
+    ) -> bool:
         """Compact by replaying threshold crossings over the sequence.
 
         Feeds messages in order, compacting whenever the running estimate
@@ -142,10 +266,13 @@ class Engine:
         estimate).
         """
         cfg = self.cfg
+        knobs = compact_cfg or cfg
         msgs = ctx.msgs
         try:
             fixed_chars = len(
-                json.dumps({**ctx.body, "messages": []}, ensure_ascii=False)
+                json.dumps(
+                    {**ctx.body, ctx.dialect.messages_key: []}, ensure_ascii=False
+                )
             )
         except (TypeError, ValueError):
             fixed_chars = 0
@@ -199,14 +326,14 @@ class Engine:
             working.append(msgs[i])
             chars += self._msg_chars(msgs[i])
             if chars > threshold_chars:
-                result = compact(working, ctx.dialect, cfg)
+                result = compact(working, ctx.dialect, knobs)
                 if result is None:
                     continue  # not enough turns yet; keep feeding
                 if not apply(result):
                     return n_compactions > 0
 
         if n_compactions == 0 and force:
-            result = compact(working, ctx.dialect, cfg)
+            result = compact(working, ctx.dialect, knobs)
             if result is not None:
                 apply(result)
 

@@ -254,17 +254,22 @@ def create_app(
                 resp.status_code,
             )
 
-        # Reactive fallback: on a context-length 400, compact and replay once.
+        # Reactive fallback: on a context-length 400, walk the escalation
+        # ladder (base force-compact -> keep_recent=1 -> +caps -> truncated
+        # summary), replaying after each rung until the provider accepts.
         if resp.status_code == 400 and ctx is not None and not cfg.shadow:
             data = await resp.aread()
             await resp.aclose()
             if is_context_error(data):
                 try:
-                    if engine.reactive(ctx):
+                    while engine.reactive(ctx):
                         retry_body = json.dumps(
                             ctx.outgoing_body(), ensure_ascii=False
                         ).encode("utf-8")
-                        logger.info("reactive: replaying compacted request")
+                        logger.info(
+                            "reactive: replaying compacted request (rung %d)",
+                            ctx.rung,
+                        )
                         t_replay = time.monotonic()
                         resp2 = await send_upstream(request, upstream, retry_body)
                         logger.debug(
@@ -274,12 +279,27 @@ def create_app(
                             resp2.status_code,
                             (time.monotonic() - t_replay) * 1000,
                         )
+                        if resp2.status_code == 400:
+                            data2 = await resp2.aread()
+                            await resp2.aclose()
+                            if is_context_error(data2):
+                                data = data2  # still too big: next rung
+                                continue
+                            headers2 = {
+                                k: v
+                                for k, v in resp2.headers.items()
+                                if k.lower() not in _STRIP_RESPONSE_HEADERS
+                            }
+                            return Response(
+                                content=data2, status_code=400, headers=headers2
+                            )
                         if resp2.status_code >= 400:
                             logger.warning(
                                 "replay still failed: upstream returned %d",
                                 resp2.status_code,
                             )
                         return relay(resp2, t_start=t0)
+                    logger.warning("reactive: escalation exhausted; returning 400")
                 except httpx.HTTPError as exc:
                     logger.error("upstream error on replay: %s", exc)
                 except Exception:

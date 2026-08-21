@@ -151,8 +151,14 @@ def test_store_loss_replays_chain_not_accumulate():
     assert ctx.est_tokens_out <= cfg.threshold_tokens * 2
 
 
-def test_reactive_gives_up_after_compaction():
+def test_reactive_ladder_terminates():
     engine = Engine(Config(threshold_tokens=2_000, keep_recent=1))
     ctx = engine.prepare(a_body(a_session(10)), ANTHROPIC)
     assert ctx.compacted
-    assert engine.reactive(ctx) is False  # already compacted; genuinely doesn't fit
+    # Escalation walks finitely many rungs, then gives up for good.
+    attempts = 0
+    while engine.reactive(ctx) and attempts < 10:
+        attempts += 1
+    assert attempts <= 4
+    assert engine.reactive(ctx) is False
+    assert engine.reactive(ctx) is False  # stays exhausted
