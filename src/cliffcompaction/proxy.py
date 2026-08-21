@@ -170,7 +170,10 @@ def create_app(
                 raise
             except (GeneratorExit, BaseException):
                 # Client hung up (or task cancelled) while we were relaying.
-                logger.warning(
+                # Normal client behavior (Codex closes the stream as soon as
+                # it has response.completed; users Ctrl-C) — debug, not a
+                # warning: nothing here is attributable to cliff or upstream.
+                logger.debug(
                     "relay: client disconnected after %d bytes / %.1fs",
                     n_bytes,
                     time.monotonic() - started,
