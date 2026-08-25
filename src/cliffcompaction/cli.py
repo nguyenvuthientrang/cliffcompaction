@@ -166,6 +166,13 @@ def cmd_enable(args: argparse.Namespace) -> int:
     from . import daemon
 
     port = args.port if args.port is not None else Config.from_env().port
+    if not daemon.service_running()[0] and daemon.port_in_use(port):
+        print(
+            f"error: port {port} is already in use (a manual `cliff serve`?). "
+            f"Stop it first, or pass --port for a different one.",
+            file=sys.stderr,
+        )
+        return 1
     try:
         daemon.start_service(port, _serve_args_from(args))
     except RuntimeError as exc:
@@ -211,9 +218,16 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     port = args.port if args.port is not None else Config.from_env().port
     installed = daemon.service_installed()
+    running, last_exit = daemon.service_running()
     status = daemon.probe(port)
     wired = daemon.profile_is_wired(daemon.default_profile())
     print(f"daemon installed : {'yes' if installed else 'no'}")
+    if installed:
+        detail = "running" if running else "NOT running"
+        if not running and last_exit:
+            detail += f" (last exit {last_exit}"
+            detail += "; port already in use?)" if last_exit == 3 else ")"
+        print(f"daemon service   : {detail}")
     if status is not None:
         mode = "shadow" if status.get("shadow") else "active"
         print(
@@ -227,6 +241,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"env wired        : {'yes' if wired else 'no'} ({daemon.default_profile()})")
     if installed and status is None:
         print(f"hint: check the log at {daemon.log_path()}")
+    if installed and not running and status is not None:
+        print(
+            f"warning: port {port} is answered by another proxy, not the daemon "
+            f"(a manual `cliff serve` still running?); stop it and re-run `cliff enable`"
+        )
     return 0
 
 

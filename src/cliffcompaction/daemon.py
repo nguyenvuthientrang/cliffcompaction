@@ -173,7 +173,16 @@ def start_service(port: int, serve_args: list[str]) -> None:
         # Refresh: bootout any existing instance first (ignore failures).
         _run(["launchctl", "bootout", f"{_gui_domain()}/{LABEL}"])
         path.write_bytes(plist_content(port, serve_args))
+        # bootout is asynchronous: launchd may still hold the label when the
+        # bootstrap arrives, which fails with "Bootstrap failed: 5: Input/
+        # output error". Retry briefly instead of surfacing that to the user.
         res = _run(["launchctl", "bootstrap", _gui_domain(), str(path)])
+        for _ in range(10):
+            if res.returncode == 0:
+                break
+            time.sleep(0.3)
+            _run(["launchctl", "bootout", f"{_gui_domain()}/{LABEL}"])
+            res = _run(["launchctl", "bootstrap", _gui_domain(), str(path)])
         if res.returncode != 0:
             raise RuntimeError(f"launchctl bootstrap failed: {res.stderr.strip()}")
     elif sys.platform.startswith("linux"):
@@ -210,6 +219,43 @@ def service_installed() -> bool:
         return plist_path().exists()
     if sys.platform.startswith("linux"):
         return systemd_unit_path().exists()
+    return False
+
+
+def service_running() -> tuple[bool, int | None]:
+    """(running, last_exit_status) for the installed service.
+
+    A plist/unit on disk says nothing about the service actually running: a
+    stale proxy squatting the port makes the daemon die on bind while
+    probe() still gets healthy answers from the squatter.
+    """
+    if sys.platform == "darwin":
+        res = _run(["launchctl", "list"])
+        for line in res.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3 and parts[2].strip() == LABEL:
+                pid = None if parts[0].strip() == "-" else int(parts[0])
+                try:
+                    last = int(parts[1])
+                except ValueError:
+                    last = None
+                return pid is not None, last
+        return False, None
+    if sys.platform.startswith("linux"):
+        res = _run(["systemctl", "--user", "is-active", SYSTEMD_UNIT])
+        return res.stdout.strip() == "active", None
+    return False, None
+
+
+def port_in_use(port: int) -> bool:
+    """True if something already listens on the loopback port."""
+    import socket
+
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return True
     return False
 
 

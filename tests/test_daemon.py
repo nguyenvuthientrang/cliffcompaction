@@ -70,3 +70,27 @@ def test_systemd_unit_content():
 
 def test_probe_unreachable():
     assert daemon.probe(1, timeout=0.2) is None
+
+
+def test_port_in_use_detects_listener():
+    import socket
+
+    from cliffcompaction import daemon
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.listen(1)
+    try:
+        assert daemon.port_in_use(port) is True
+    finally:
+        s.close()
+    assert daemon.port_in_use(port) is False
+
+
+def test_service_running_shape():
+    from cliffcompaction import daemon
+
+    running, last_exit = daemon.service_running()
+    assert isinstance(running, bool)
+    assert last_exit is None or isinstance(last_exit, int)
