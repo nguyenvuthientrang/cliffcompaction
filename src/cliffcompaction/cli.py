@@ -3,6 +3,7 @@
     cliff enable [options]                     # daily driver: supervised daemon + shell env wiring
     cliff disable                              # remove the daemon and env wiring
     cliff status                               # daemon / env / store health
+    cliff watch                                # live view of sessions through the proxy
     cliff serve [--shadow] [--port N] ...      # run the proxy in the foreground
     cliff run [--shadow] [options] -- CMD ...  # wrap one command: proxy up, env set, run, tear down
 
@@ -261,6 +262,13 @@ def _print_enable_screen(status: dict, port: int, profile, wired: bool) -> None:
     term.out(*banner(term), *lines, "")
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    from . import watch
+
+    port = args.port if args.port is not None else Config.from_env().port
+    return watch.run(port)
+
+
 def cmd_disable(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -344,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     p_status = sub.add_parser("status", help="daemon / env / store health")
     p_status.add_argument("--port", type=int, default=None)
 
+    p_watch = sub.add_parser("watch", help="live view of sessions through the proxy")
+    p_watch.add_argument("--port", type=int, default=None)
+
     args = parser.parse_args(argv)
     _setup_logging(getattr(args, "verbose", False))
 
@@ -357,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_disable(args)
     if args.cmd == "status":
         return cmd_status(args)
+    if args.cmd == "watch":
+        return cmd_watch(args)
     return 2
 
 

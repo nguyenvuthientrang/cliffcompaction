@@ -10,11 +10,12 @@ import os
 import shutil
 import sys
 
-BRAND = (0, 210, 190)
-TEXT = (203, 213, 225)
-DIM = (100, 116, 139)
-FAINT = (71, 85, 105)
-YELLOW = (253, 224, 71)
+BRAND = (0, 210, 190)     # 00D2BE
+YELLOW = (255, 218, 51)   # FFDA33
+TEXT = (203, 213, 225)    # values
+DIM = (107, 122, 143)     # labels
+FAINT = (58, 70, 84)      # rules, hints
+IDLE = (47, 110, 104)     # a session gone quiet: teal, drained
 RED = (248, 113, 113)
 
 MAX_WIDTH = 104
@@ -45,7 +46,14 @@ class Term:
         self.tty = bool(getattr(self.stream, "isatty", lambda: False)())
         self.color = _color_enabled(self.stream)
         self.unicode = _unicode_ok(self.stream)
-        self.raw_columns = shutil.get_terminal_size((80, 24)).columns
+        self.rows = 24
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Re-read the terminal size (it changes when the window does)."""
+        size = shutil.get_terminal_size((80, 24))
+        self.raw_columns = size.columns
+        self.rows = size.lines
         # Body text is capped so it stays readable in a very wide window; the
         # banner still uses the full width to decide its layout.
         self.columns = min(self.raw_columns, MAX_WIDTH)

@@ -61,6 +61,10 @@ class RequestCtx:
     rung: int = 0
     est_tokens_in: int = 0
     est_tokens_out: int = 0
+    # Observability only (the watcher reads these; nothing branches on them).
+    chain_steps: int = 0
+    summary_fp: str = ""
+    out_msgs: int = 0
 
     def outgoing_body(self) -> dict:
         if not self.modified:
@@ -348,6 +352,9 @@ class Engine:
         ctx.modified = True
         ctx.compacted = True
         ctx.est_tokens_out = estimate_tokens(ctx.outgoing_body())
+        ctx.chain_steps = n_compactions
+        ctx.summary_fp = _summary_fingerprint(last_summary)
+        ctx.out_msgs = len(working)
         self.store.put(
             ctx.chain[orig_cut - 1],
             Entry(head_len=head_len, summary=last_summary, cut=orig_cut),

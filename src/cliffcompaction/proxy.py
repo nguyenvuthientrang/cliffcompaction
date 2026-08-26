@@ -7,6 +7,7 @@ forwards every request verbatim.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import logging
@@ -26,6 +27,7 @@ from . import __version__
 from .config import DEFAULT_ANTHROPIC_UPSTREAM, DEFAULT_OPENAI_UPSTREAM, Config
 from .dialects import detect
 from .engine import Engine
+from .events import EventHub, sse
 
 logger = logging.getLogger("cliffcompaction")
 
@@ -67,7 +69,31 @@ def create_app(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> Starlette:
     engine = engine or Engine(cfg)
+    hub = EventHub()
+    started_at = time.time()
     _debug_seq = itertools.count(1)
+
+    def emit_request(ctx, dialect) -> None:
+        """One event per handled request. Observability only."""
+        if ctx is None or not ctx.chain:
+            return
+        model = ctx.body.get("model") if isinstance(ctx.body, dict) else None
+        hub.emit(
+            kind="compact" if ctx.compacted else ("match" if ctx.modified else "pass"),
+            # The first chain hash identifies the conversation: same system
+            # prompt + first message => same session, no client cooperation.
+            sid=ctx.chain[0][:12],
+            model=model if isinstance(model, str) else "?",
+            dialect=dialect.name,
+            cut=ctx.base_cut,
+            total=len(ctx.msgs),
+            out_msgs=ctx.out_msgs,
+            est_in=ctx.est_tokens_in,
+            est_out=ctx.est_tokens_out or ctx.est_tokens_in,
+            steps=ctx.chain_steps,
+            rung=ctx.rung,
+            fp=ctx.summary_fp,
+        )
 
     def debug_dump(path: str, dialect, ctx) -> None:
         """Write what cliff saw and what it sent. Failures never propagate."""
@@ -224,6 +250,7 @@ def create_app(
                 out_body = raw
             if cfg.debug_dir and ctx is not None:
                 debug_dump(path, dialect, ctx)
+            emit_request(ctx, dialect)
 
         t_prep = time.monotonic()
         try:
@@ -273,6 +300,7 @@ def create_app(
                             "reactive: replaying compacted request (rung %d)",
                             ctx.rung,
                         )
+                        emit_request(ctx, dialect)
                         t_replay = time.monotonic()
                         resp2 = await send_upstream(request, upstream, retry_body)
                         logger.debug(
@@ -325,7 +353,34 @@ def create_app(
                 "threshold_tokens": cfg.threshold_tokens,
                 "keep_recent": cfg.keep_recent,
                 "store_entries": len(engine.store),
+                "watchers": hub.subscribers,
+                "uptime_s": int(time.time() - started_at),
             }
+        )
+
+    async def events(request: Request) -> StreamingResponse:
+        """SSE stream for `cliff watch`: recent backlog, then live events."""
+        q = hub.subscribe()
+        backlog = hub.backlog()
+
+        async def gen():
+            try:
+                for ev in backlog:
+                    yield sse(ev)
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(q.get(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        yield b": keepalive\n\n"   # detect a gone client
+                        continue
+                    yield sse(ev)
+            finally:
+                hub.unsubscribe(q)
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-store", "x-accel-buffering": "no"},
         )
 
     @asynccontextmanager
@@ -335,9 +390,10 @@ def create_app(
         finally:
             await client.aclose()
 
-    return Starlette(
+    app = Starlette(
         routes=[
             Route("/__cliff__/status", status, methods=["GET"]),
+            Route("/__cliff__/events", events, methods=["GET"]),
             Route(
                 "/{path:path}",
                 handle,
@@ -346,3 +402,5 @@ def create_app(
         ],
         lifespan=lifespan,
     )
+    app.state.hub = hub   # tests and introspection; not part of the request path
+    return app
