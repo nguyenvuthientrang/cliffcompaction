@@ -189,15 +189,76 @@ def cmd_enable(args: argparse.Namespace) -> int:
     profile = Path(args.profile) if args.profile else daemon.default_profile()
     if not args.no_env:
         daemon.wire_profile(profile, port)
-    mode = "shadow" if status.get("shadow") else "active"
-    print(f"cliffcompaction enabled: proxy on http://127.0.0.1:{port} ({mode} mode)")
-    print(f"  supervised: auto-restarts, survives reboots (logs: {daemon.log_path()})")
-    if args.no_env:
-        print("  env wiring skipped (--no-env); set ANTHROPIC_BASE_URL/OPENAI_BASE_URL yourself")
-    else:
-        print(f"  env wired in {profile}")
-        print("  open a new terminal (or `source` your profile) for agents to pick it up")
+    _print_enable_screen(status, port, profile, wired=not args.no_env)
     return 0
+
+
+def _pad(text: str, width: int) -> str:
+    """Left-align in a column, always leaving a gap when the text overflows."""
+    return text.ljust(width) if len(text) < width else text + "  """
+
+def _print_enable_screen(status: dict, port: int, profile, wired: bool) -> None:
+    from pathlib import Path
+
+    from . import daemon
+    from .ui import BRAND, DIM, FAINT, TEXT, YELLOW, Term, banner
+
+    term = Term()
+    mode = "shadow" if status.get("shadow") else "active"
+    home = str(Path.home())
+
+    def short(path) -> str:
+        text = str(path)
+        return "~" + text[len(home) :] if text.startswith(home) else text
+
+    def row(mark: str, key: str, val: str, hint: str, mark_rgb=BRAND) -> str:
+        return (
+            "  "
+            + term.c(mark_rgb, mark)
+            + " "
+            + term.c(DIM, key.ljust(9))
+            + (term.c(TEXT, _pad(val, 34)) + term.c(FAINT, hint) if hint else term.c(TEXT, val))
+        )
+
+    ok = "✓" if term.unicode else "+"
+    dot = "·" if term.unicode else "-"
+    threshold = f"{status.get('threshold_tokens', 0) // 1000}k"
+    lines = [
+        row(ok, "daemon", f"supervised on 127.0.0.1:{port}", "auto-restarts, survives reboots"),
+    ]
+    if wired:
+        lines.append(
+            row(ok, "env", f"wired in {short(profile)}", "ANTHROPIC_BASE_URL, OPENAI_BASE_URL")
+        )
+    else:
+        lines.append(
+            row(
+                "!",
+                "env",
+                "not wired (--no-env)",
+                "set ANTHROPIC_BASE_URL/OPENAI_BASE_URL yourself",
+                mark_rgb=YELLOW,
+            )
+        )
+    lines += [
+        row(ok, "config", f"threshold {threshold} {dot} keep {status.get('keep_recent')} {dot} {mode}", ""),
+        row(" ", "logs", short(daemon.log_path()), ""),
+    ]
+
+    steps = [
+        ("open a new terminal", "agents pick up the env there"),
+        ("run your agent as usual", "no flags, no integration"),
+        ("cliff status", f"check on it {dot} cliff disable turns it off"),
+    ]
+    if not wired:
+        steps[0] = (f"export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}", "and OPENAI_BASE_URL")
+    lines += ["", term.rule("next"), ""]
+    for i, (text, hint) in enumerate(steps, 1):
+        lines.append(
+            "  " + term.c(BRAND, str(i)) + "  " + term.c(TEXT, _pad(text, 31)) + term.c(FAINT, hint)
+        )
+
+    term.out(*banner(term), *lines, "")
 
 
 def cmd_disable(args: argparse.Namespace) -> int:
