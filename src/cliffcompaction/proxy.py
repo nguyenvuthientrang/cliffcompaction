@@ -73,9 +73,26 @@ def create_app(
     started_at = time.time()
     _debug_seq = itertools.count(1)
 
+    # Output caps a scaffold uses for probes rather than turns.
+    _CAP_KEYS = ("max_tokens", "max_output_tokens", "max_completion_tokens")
+
+    def is_probe(body: dict) -> bool:
+        """A request that asks for at most one output token is a liveness or
+        quota probe, not a turn. Claude Code opens every session with one
+        (`content: "quota"`, max_tokens 1) — byte-identical across sessions, so
+        it would otherwise share a chain hash and show up as one phantom
+        session in the watcher."""
+        for key in _CAP_KEYS:
+            cap = body.get(key)
+            if isinstance(cap, int) and cap <= 1:
+                return True
+        return False
+
     def emit_request(ctx, dialect) -> None:
         """One event per handled request. Observability only."""
         if ctx is None or not ctx.chain:
+            return
+        if isinstance(ctx.body, dict) and is_probe(ctx.body):
             return
         model = ctx.body.get("model") if isinstance(ctx.body, dict) else None
         hub.emit(

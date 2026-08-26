@@ -91,6 +91,22 @@ def test_untouched_paths_emit_nothing():
     assert app.state.hub.backlog() == []
 
 
+def test_probe_requests_emit_nothing():
+    """Claude Code opens every session with an identical max_tokens=1 probe;
+    counting it would collapse every session into one phantom watcher row."""
+    app = _app()
+    client = TestClient(app)
+    probe = {"role": "user", "content": "quota"}
+    client.post("/v1/messages", json={"model": "m", "max_tokens": 1, "messages": [probe]})
+    client.post("/v1/chat/completions", json={"model": "m", "max_completion_tokens": 1,
+                                             "messages": [probe]})
+    assert app.state.hub.backlog() == []
+
+    # ...but a real turn with the same opening message still reports.
+    client.post("/v1/messages", json={"model": "m", "max_tokens": 4096, "messages": [probe]})
+    assert len(app.state.hub.backlog()) == 1
+
+
 def test_status_reports_watchers_and_uptime():
     body = TestClient(_app()).get("/__cliff__/status").json()
     assert body["watchers"] == 0
