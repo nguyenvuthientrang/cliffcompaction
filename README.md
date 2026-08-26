@@ -25,9 +25,9 @@ cliff run -- python my_agent.py
 Manual mode (flags optional — see Configuration):
 
 ```bash
-cliff serve --port 8399 --threshold 128000 --keep-recent 3
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8399
-export OPENAI_BASE_URL=http://127.0.0.1:8399/v1
+cliff serve --port 8257 --threshold 128000 --keep-recent 3
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8257
+export OPENAI_BASE_URL=http://127.0.0.1:8257/v1
 ```
 
 **Important:** disable your scaffold's own compaction/summarization if it has one. With the proxy active your scaffold sees small prompt token counts, so its native triggers generally won't fire anyway — but disabling it is still recommended, since some native compactions rewrite history in place, which breaks the prefix matching CliffCompaction relies on.

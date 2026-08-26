@@ -62,7 +62,7 @@ class Config:
     anthropic_upstream: str = DEFAULT_ANTHROPIC_UPSTREAM
     openai_upstream: str = DEFAULT_OPENAI_UPSTREAM
     host: str = "127.0.0.1"
-    port: int = 8399
+    port: int = 8257
 
     # --- state store ---
     store_max_entries: int = 4096
@@ -89,6 +89,6 @@ class Config:
                 "CLIFF_OPENAI_UPSTREAM", DEFAULT_OPENAI_UPSTREAM
             ),
             host=os.environ.get("CLIFF_HOST", "127.0.0.1"),
-            port=_env_int("CLIFF_PORT", 8399),
+            port=_env_int("CLIFF_PORT", 8257),
             store_max_entries=_env_int("CLIFF_STORE_MAX_ENTRIES", 4096),
         )
