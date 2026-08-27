@@ -25,7 +25,7 @@ cliff run -- python my_agent.py
 Manual mode (flags optional — see Configuration):
 
 ```bash
-cliff serve --port 8257 --threshold 128000 --keep-recent 3
+cliff serve --port 8257 --threshold 200000 --keep-recent 3
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8257
 export OPENAI_BASE_URL=http://127.0.0.1:8257/v1
 ```
@@ -67,7 +67,7 @@ Runs the full pipeline (hash, match, would-compact, log) but forwards every requ
 
 | Flag / env var | Default | Meaning |
 |---|---|---|
-| `--threshold` / `CLIFF_THRESHOLD_TOKENS` | 128000 | proactive compaction trigger (est. tokens) |
+| `--threshold` / `CLIFF_THRESHOLD_TOKENS` | 200000 | proactive compaction trigger (est. tokens) |
 | `--keep-recent` / `CLIFF_KEEP_RECENT` | 3 | recent assistant-step turns kept verbatim |
 | `--thought-max-chars` / `CLIFF_THOUGHT_MAX_CHARS` | 0 (unlimited) | cap on assistant text in summaries |
 | `--thinking-max-chars` / `CLIFF_THINKING_MAX_CHARS` | 0 (unlimited) | cap on thinking text in summaries, independent of the thought cap |

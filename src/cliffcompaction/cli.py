@@ -38,7 +38,7 @@ def _setup_logging(verbose: bool) -> None:
 
 def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--shadow", action="store_true", help="observe and log, never modify a request")
-    p.add_argument("--threshold", type=int, help="proactive compaction threshold in est. tokens (default 128000)")
+    p.add_argument("--threshold", type=int, help="proactive compaction threshold in est. tokens (default 200000)")
     p.add_argument("--keep-recent", type=int, help="recent turns kept verbatim (default 3)")
     p.add_argument("--thought-max-chars", type=int, help="cap on assistant text per summarized turn; 0 = unlimited (default)")
     p.add_argument("--result-max-chars", type=int, help="tool results longer than this are dropped (default 500)")

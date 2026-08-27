@@ -30,7 +30,7 @@ class Config:
     # --- compaction knobs ---
     # Proactive trigger: compact when the outgoing request exceeds this
     # (estimated at chars/4).
-    threshold_tokens: int = 128_000
+    threshold_tokens: int = 200_000
     # Number of recent assistant-step turns kept verbatim.
     keep_recent: int = 3
     # Max chars of assistant text kept per summarized turn. 0 = unlimited.
@@ -72,7 +72,7 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
-            threshold_tokens=_env_int("CLIFF_THRESHOLD_TOKENS", 128_000),
+            threshold_tokens=_env_int("CLIFF_THRESHOLD_TOKENS", 200_000),
             keep_recent=_env_int("CLIFF_KEEP_RECENT", 3),
             thought_max_chars=_env_int("CLIFF_THOUGHT_MAX_CHARS", 0),
             cmd_max_chars=_env_int("CLIFF_CMD_MAX_CHARS", 150),
