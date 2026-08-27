@@ -21,6 +21,7 @@ IDLE_AFTER = 120       # seconds without traffic: the row dims
 DROP_AFTER = 1800      # ...and then leaves the list
 SERIES = 240           # per-session samples kept for the sparkline
 FEED = 200             # events kept for the feed
+MIN_SPAN = 0.25        # a row spans at least this fraction of the threshold
 
 BARS = "▁▂▃▄▅▆▇█"
 
@@ -76,16 +77,26 @@ class Session:
         self.n += 1
 
     def spark(self, term: Term, width: int, threshold: int, idle: bool) -> str:
+        """One cell per request, newest at the right edge.
+
+        The ceiling is the threshold (a full bar means "at the cliff"), but the
+        floor follows the session's own low-water mark: sessions spend their
+        lives in the top fraction of the budget, and scaling from zero would
+        flatten every cycle into a solid block. MIN_SPAN keeps a session that
+        is genuinely flat from having its noise amplified to full height."""
         pts = list(self.series)[-width:]
         first = self.n - len(pts)
         marks = {m for m in self.marks if m >= first}
+        hi = max(max(pts, default=0), threshold)
+        span = max(hi - min(pts, default=0), int(threshold * MIN_SPAN) or 1)
+        lo = hi - span
         out = []
         for i, v in enumerate(pts):
-            f = v / threshold if threshold else 0.0
+            f = (v - lo) / span
             ch = BARS[min(max(int(f * (len(BARS) - 1) + 0.5), 0), len(BARS) - 1)]
             hot = (first + i) in marks
             out.append(term.c(IDLE if idle else (YELLOW if hot else BRAND), ch))
-        return "".join(out) + " " * (width - len(pts))
+        return " " * (width - len(pts)) + "".join(out)
 
 
 class Watcher:
@@ -97,7 +108,7 @@ class Watcher:
         self.requests = 0
         self.compactions = 0
         self.window_start = time.time()
-        self.threshold = 128_000
+        self.threshold = 200_000
         self.keep_recent = 3
         self.shadow = False
         self.uptime = 0.0
