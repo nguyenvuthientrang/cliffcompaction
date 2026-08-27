@@ -156,6 +156,8 @@ def _serve_args_from(args: argparse.Namespace) -> list[str]:
         out += ["--anthropic-upstream", args.anthropic_upstream]
     if args.openai_upstream:
         out += ["--openai-upstream", args.openai_upstream]
+    if args.debug_dir:
+        out += ["--debug-dir", args.debug_dir]
     if args.verbose:
         out.append("-v")
     return out

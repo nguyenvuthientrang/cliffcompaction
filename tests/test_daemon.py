@@ -94,3 +94,31 @@ def test_service_running_shape():
     running, last_exit = daemon.service_running()
     assert isinstance(running, bool)
     assert last_exit is None or isinstance(last_exit, int)
+
+
+def test_every_common_flag_reaches_the_daemon():
+    """`cliff enable --foo` bakes flags into the service definition, so a flag
+    accepted by the parser but dropped by _serve_args_from is silently ignored."""
+    import argparse
+
+    from cliffcompaction import cli
+
+    parser = argparse.ArgumentParser(add_help=False)
+    cli._add_common_flags(parser)
+
+    argv = []
+    for action in parser._actions:
+        if not action.option_strings:
+            continue
+        flag = max(action.option_strings, key=len)
+        argv.append(flag)
+        if action.nargs != 0:
+            argv.append("7" if action.type is int else "x")
+
+    forwarded = cli._serve_args_from(parser.parse_args(argv))
+    dropped = [
+        a.option_strings[-1]
+        for a in parser._actions
+        if a.option_strings and not any(o in forwarded for o in a.option_strings)
+    ]
+    assert not dropped, f"accepted but never forwarded to the daemon: {dropped}"
