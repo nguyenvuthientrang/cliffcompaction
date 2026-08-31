@@ -53,7 +53,7 @@ The summary is mechanical, built by content class:
 
 Re-compaction **drops** the previous summary.
 
-**Fail-open contract:** any failure — unparseable body, no prefix match, store error — means verbatim passthrough.
+**Fail-open contract:** any failure — unparseable body, no prefix match, store error — means verbatim passthrough. The one exception is `--strict`, which is off by default; see below.
 
 ## Shadow mode
 
@@ -62,6 +62,18 @@ cliff run --shadow -- claude     # or: cliff enable --shadow
 ```
 
 Runs the full pipeline (hash, match, would-compact, log) but forwards every request verbatim. Use it to verify a scaffold's history is prefix-stable before going active, and to see what compaction would have saved.
+
+## Strict mode
+
+```bash
+cliff run --strict --threshold 16000 -- your-benchmark-harness
+```
+
+Normally a request that is *still* over the threshold once the escalation ladder is exhausted is sent anyway — a soft send. That is the right default for interactive work: the alternative is a failed turn, and the oversized content ages into the compacted region on the next cycle regardless.
+
+For measurement it is the wrong default, because the run quietly consumes more context than the budget it reports. `--strict` refuses those requests instead, returning HTTP 400 with `error.type: "cliff_over_budget"` so the harness records a failure rather than an oversized turn. It also walks one extra rung first (summary truncation, otherwise reactive-only), so it only refuses when nothing else fits.
+
+Only over-budget requests are affected. Every other failure still fails open, and `--strict` is inert under `--shadow`, which modifies nothing by definition.
 
 ## Configuration
 
@@ -77,6 +89,7 @@ Runs the full pipeline (hash, match, would-compact, log) but forwards every requ
 | `--anthropic-upstream` / `CLIFF_ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | |
 | `--openai-upstream` / `CLIFF_OPENAI_UPSTREAM` | `https://api.openai.com` | |
 | `--shadow` / `CLIFF_SHADOW` | off | observe-only mode |
+| `--strict` / `CLIFF_STRICT` | off | fail an over-budget request instead of sending it anyway (measurement runs) |
 | `--debug-dir` / `CLIFF_DEBUG_DIR` | off | dump each handled request's incoming/outgoing message arrays as JSON files |
 
 Supported dialects: **Anthropic Messages** (`/v1/messages`) and **OpenAI Chat Completions** (`/chat/completions`), native tool calling. Everything else passes through verbatim. Paths that match neither dialect (e.g. `/v1/models`) are forwarded to the Anthropic upstream — or to the OpenAI upstream when it is the only one you configured, so a single-provider OpenAI setup needs no extra flags.

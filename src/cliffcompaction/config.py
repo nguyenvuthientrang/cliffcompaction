@@ -55,6 +55,13 @@ class Config:
     # --- proxy behavior ---
     # Shadow mode: observe, hash, log — but never modify a request.
     shadow: bool = False
+    # Strict mode: refuse rather than forward a request that is still over
+    # threshold_tokens once the escalation ladder is exhausted. Off by
+    # default — normal use prefers a soft over-budget send to a failed turn,
+    # since oversized content ages into the compacted region next cycle.
+    # For measurement there is no next cycle worth crediting: a run that
+    # silently exceeded its stated budget is not the run being reported.
+    strict: bool = False
     # Debug dump directory: when set, every dialect-handled request is written
     # there as JSON (incoming and outgoing message arrays). Observability
     # only — dump failures never affect request handling.
@@ -81,6 +88,7 @@ class Config:
             keep_thinking=_env_bool("CLIFF_KEEP_THINKING", True),
             thinking_max_chars=_env_int("CLIFF_THINKING_MAX_CHARS", 0),
             shadow=_env_bool("CLIFF_SHADOW", False),
+            strict=_env_bool("CLIFF_STRICT", False),
             debug_dir=os.environ.get("CLIFF_DEBUG_DIR", ""),
             anthropic_upstream=os.environ.get(
                 "CLIFF_ANTHROPIC_UPSTREAM", DEFAULT_ANTHROPIC_UPSTREAM

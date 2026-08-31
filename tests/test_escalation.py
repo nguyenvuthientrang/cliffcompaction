@@ -136,3 +136,93 @@ def test_reactive_gives_up_and_returns_400():
     assert r.status_code == 400
     # bounded replays: original + at most one per remaining rung
     assert len(up.requests) <= 5
+
+
+# --- strict mode ---------------------------------------------------------------
+#
+# Default behavior is a soft send: a request still over threshold once the
+# ladder is exhausted goes out anyway. Strict mode refuses it instead, so a
+# measurement run cannot quietly exceed the budget it reports.
+
+
+def unreachable_upstream():
+    """Fails the test if the proxy forwards anything."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("strict mode forwarded an over-budget request")
+    return httpx.MockTransport(handler)
+
+
+def test_strict_refuses_over_budget_request():
+    # The soft-send scenario: one monster turn, nothing below it to compact.
+    cfg = Config(threshold_tokens=1000, keep_recent=3, strict=True)
+    app = create_app(cfg, transport=unreachable_upstream())
+    r = TestClient(app).post("/v1/messages", json=a_body(fat_session(1, result_chars=40000)))
+    assert r.status_code == 400
+    assert r.json()["error"]["type"] == "cliff_over_budget"
+
+
+def test_strict_refusal_is_not_mistaken_for_a_context_error():
+    # The refusal must not trip cliff's own upstream-context-error matcher:
+    # a proxy chained in front of another one would otherwise read it as a
+    # provider overflow and start its own reactive ladder.
+    from cliffcompaction.proxy import is_context_error
+
+    cfg = Config(threshold_tokens=1000, keep_recent=3, strict=True)
+    app = create_app(cfg, transport=unreachable_upstream())
+    r = TestClient(app).post("/v1/messages", json=a_body(fat_session(1, result_chars=40000)))
+    assert not is_context_error(r.content)
+
+
+def test_soft_send_remains_the_default():
+    # Same request, strict off: it goes upstream over budget.
+    up = PickyUpstream(max_chars=10**9)
+    cfg = Config(threshold_tokens=1000, keep_recent=3)
+    app = create_app(cfg, transport=httpx.MockTransport(up.handler))
+    r = TestClient(app).post("/v1/messages", json=a_body(fat_session(1, result_chars=40000)))
+    assert r.status_code == 200
+    assert len(up.requests) == 1
+
+
+def test_strict_forwards_what_fits():
+    # Strict only refuses over-budget requests; a session the ladder can get
+    # under threshold is forwarded normally.
+    up = PickyUpstream(max_chars=10**9)
+    cfg = Config(threshold_tokens=4000, keep_recent=3, strict=True)
+    app = create_app(cfg, transport=httpx.MockTransport(up.handler))
+    r = TestClient(app).post("/v1/messages", json=a_body(fat_session(8)))
+    assert r.status_code == 200
+    assert len(up.requests) == 1
+    assert len(json.loads(up.requests[0].content)["messages"]) < 17
+
+
+def test_strict_walks_rung3_before_refusing():
+    # Rung 3 (summary truncation) is reactive-only by default; strict walks
+    # it proactively, which is what saves this session from a refusal.
+    eng = Engine(Config(threshold_tokens=1000, keep_recent=1, strict=True))
+    ctx = eng.prepare(a_body(fat_session(10, result_chars=300)), DIALECT)
+    assert ctx.rung == 3
+    assert not ctx.over_budget
+    assert ctx.est_tokens_out <= 1000
+
+
+def test_default_ladder_stops_at_rung2():
+    # Same session without strict: the proactive ladder does not truncate.
+    eng = Engine(Config(threshold_tokens=1000, keep_recent=1))
+    ctx = eng.prepare(a_body(fat_session(10, result_chars=300)), DIALECT)
+    assert ctx.rung <= 2
+
+
+def test_strict_is_inert_in_shadow_mode():
+    # Shadow modifies nothing, so there is no budget to enforce.
+    up = PickyUpstream(max_chars=10**9)
+    cfg = Config(threshold_tokens=1000, keep_recent=3, strict=True, shadow=True)
+    app = create_app(cfg, transport=httpx.MockTransport(up.handler))
+    r = TestClient(app).post("/v1/messages", json=a_body(fat_session(1, result_chars=40000)))
+    assert r.status_code == 200
+    assert len(up.requests) == 1
+
+
+def test_over_budget_flag_clear_when_under_threshold():
+    eng = Engine(Config(threshold_tokens=4000, keep_recent=3, strict=True))
+    ctx = eng.prepare(a_body(fat_session(8)), DIALECT)
+    assert not ctx.over_budget

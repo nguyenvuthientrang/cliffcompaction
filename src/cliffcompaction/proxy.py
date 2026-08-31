@@ -3,6 +3,10 @@
 Fail-open: any failure (unparseable body, unknown path, engine error)
 results in verbatim passthrough. Shadow mode runs the full pipeline but
 forwards every request verbatim.
+
+The single exception is strict mode, off by default: there a request that
+is still over budget once the escalation ladder is exhausted is refused
+rather than forwarded. Every other failure still fails open, strict or not.
 """
 
 from __future__ import annotations
@@ -269,6 +273,37 @@ def create_app(
                 debug_dump(path, dialect, ctx)
             emit_request(ctx, dialect)
 
+        # Strict mode: a request still over threshold with the ladder
+        # exhausted never reaches the provider. The soft send is the right
+        # default for real work, but it spends more context than the
+        # configured budget — which a measurement run must not do silently.
+        # Failing here is the point: the harness sees the run fail rather
+        # than a quietly oversized turn. Inert under --shadow, which
+        # modifies nothing by definition.
+        if cfg.strict and not cfg.shadow and ctx is not None and ctx.over_budget:
+            logger.warning(
+                "strict: refusing request at ~%dk est tokens after escalation "
+                "(budget %dk, rung %d)",
+                ctx.est_tokens_out // 1000,
+                cfg.threshold_tokens // 1000,
+                ctx.rung,
+            )
+            return JSONResponse(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "cliff_over_budget",
+                        "message": (
+                            f"cliff strict mode: request is ~{ctx.est_tokens_out} "
+                            f"est tokens with the escalation ladder exhausted "
+                            f"(rung {ctx.rung}), over the configured budget of "
+                            f"{cfg.threshold_tokens}. Refusing to forward."
+                        ),
+                    },
+                },
+                status_code=400,
+            )
+
         t_prep = time.monotonic()
         try:
             resp = await send_upstream(request, upstream, out_body)
@@ -367,6 +402,7 @@ def create_app(
                 "name": "cliffcompaction",
                 "version": __version__,
                 "shadow": cfg.shadow,
+                "strict": cfg.strict,
                 "threshold_tokens": cfg.threshold_tokens,
                 "keep_recent": cfg.keep_recent,
                 "store_entries": len(engine.store),

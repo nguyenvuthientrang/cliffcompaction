@@ -38,6 +38,7 @@ def _setup_logging(verbose: bool) -> None:
 
 def _add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--shadow", action="store_true", help="observe and log, never modify a request")
+    p.add_argument("--strict", action="store_true", help="fail a request that is still over --threshold after the escalation ladder instead of sending it anyway (for measurement runs)")
     p.add_argument("--threshold", type=int, help="proactive compaction threshold in est. tokens (default 200000)")
     p.add_argument("--keep-recent", type=int, help="recent turns kept verbatim (default 3)")
     p.add_argument("--thought-max-chars", type=int, help="cap on assistant text per summarized turn; 0 = unlimited (default)")
@@ -54,6 +55,8 @@ def _config_from_args(args: argparse.Namespace) -> Config:
     cfg = Config.from_env()
     if args.shadow:
         cfg.shadow = True
+    if args.strict:
+        cfg.strict = True
     if args.threshold is not None:
         cfg.threshold_tokens = args.threshold
     if args.keep_recent is not None:
@@ -105,7 +108,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         cfg.port = args.port
     if args.host:
         cfg.host = args.host
-    mode = "shadow" if cfg.shadow else "active"
+    mode = "shadow" if cfg.shadow else ("strict" if cfg.strict else "active")
     logger.info(
         "cliffcompaction %s serving on http://%s:%d (%s mode, threshold ~%dk tokens, keep_recent=%d)",
         __version__, cfg.host, cfg.port, mode, cfg.threshold_tokens // 1000, cfg.keep_recent,
@@ -126,7 +129,7 @@ def cmd_run(args: argparse.Namespace, command: list[str]) -> int:
     env["ANTHROPIC_BASE_URL"] = base
     env["OPENAI_BASE_URL"] = base + "/v1"
     env["OPENAI_API_BASE"] = base + "/v1"  # legacy SDKs
-    mode = "shadow" if cfg.shadow else "active"
+    mode = "shadow" if cfg.shadow else ("strict" if cfg.strict else "active")
     logger.info("proxy on %s (%s mode); running: %s", base, mode, " ".join(command))
     try:
         proc = subprocess.run(command, env=env)
@@ -140,6 +143,8 @@ def _serve_args_from(args: argparse.Namespace) -> list[str]:
     out: list[str] = []
     if args.shadow:
         out.append("--shadow")
+    if args.strict:
+        out.append("--strict")
     if args.threshold is not None:
         out += ["--threshold", str(args.threshold)]
     if args.keep_recent is not None:
@@ -207,7 +212,7 @@ def _print_enable_screen(status: dict, port: int, profile, wired: bool) -> None:
     from .ui import BRAND, DIM, FAINT, TEXT, YELLOW, Term, banner
 
     term = Term()
-    mode = "shadow" if status.get("shadow") else "active"
+    mode = "shadow" if status.get("shadow") else ("strict" if status.get("strict") else "active")
     home = str(Path.home())
 
     def short(path) -> str:
@@ -300,7 +305,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             detail += "; port already in use?)" if last_exit == 3 else ")"
         print(f"daemon service   : {detail}")
     if status is not None:
-        mode = "shadow" if status.get("shadow") else "active"
+        mode = "shadow" if status.get("shadow") else ("strict" if status.get("strict") else "active")
         print(
             f"proxy responding : yes on port {port} ({mode} mode, "
             f"threshold ~{status.get('threshold_tokens', 0) // 1000}k tokens, "

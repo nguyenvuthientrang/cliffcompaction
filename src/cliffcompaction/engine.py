@@ -59,6 +59,9 @@ class RequestCtx:
     # 0 = base config only, 1 = keep_recent=1, 2 = +thought/thinking caps,
     # 3 = summary truncated to fit (reactive only).
     rung: int = 0
+    # Still over threshold once the ladder was exhausted. Always recorded;
+    # only strict mode acts on it.
+    over_budget: bool = False
     est_tokens_in: int = 0
     est_tokens_out: int = 0
     # Observability only (the watcher reads these; nothing branches on them).
@@ -119,25 +122,33 @@ class Engine:
         if ctx.est_tokens_out > self.cfg.threshold_tokens:
             self._compact_chain(ctx, reason="proactive")
             # Escalate while still over budget: harsher knobs, cliff()
-            # semantics untouched. Truncation (rung 3) is reactive-only;
-            # proactively we stop at rung 2 and send over budget (soft) —
-            # oversized content ages into the compacted region next cycle.
-            for rung in (1, 2):
+            # semantics untouched. Truncation (rung 3) is normally
+            # reactive-only; proactively we stop at rung 2 and send over
+            # budget (soft) — oversized content ages into the compacted
+            # region next cycle. Strict mode has no next cycle worth
+            # deferring to, so it walks the last rung too and then refuses.
+            for rung in (1, 2, 3) if self.cfg.strict else (1, 2):
                 if ctx.est_tokens_out <= self.cfg.threshold_tokens:
                     break
-                if self._compact_chain(
+                if rung == 3:
+                    if self._truncate_summary(ctx, reason="strict"):
+                        ctx.rung = 3
+                elif self._compact_chain(
                     ctx,
                     reason=f"escalated rung{rung}",
                     force=True,
                     compact_cfg=self._rung_cfg(rung),
                 ):
                     ctx.rung = rung
-            if ctx.compacted and ctx.est_tokens_out > self.cfg.threshold_tokens:
-                logger.info(
-                    "over budget after escalation (~%dk est > %dk); sending anyway",
-                    ctx.est_tokens_out // 1000,
-                    self.cfg.threshold_tokens // 1000,
-                )
+            if ctx.est_tokens_out > self.cfg.threshold_tokens:
+                ctx.over_budget = True
+                if ctx.compacted:
+                    logger.info(
+                        "over budget after escalation (~%dk est > %dk); %s",
+                        ctx.est_tokens_out // 1000,
+                        self.cfg.threshold_tokens // 1000,
+                        "refusing (strict)" if self.cfg.strict else "sending anyway",
+                    )
         return ctx
 
     def reactive(self, ctx: RequestCtx) -> bool:
@@ -185,11 +196,13 @@ class Engine:
                     return b["text"]
         return ""
 
-    def _truncate_summary(self, ctx: RequestCtx) -> bool:
-        """Last-resort rung (reactive only): shrink the existing summary to
-        fit the threshold budget, keeping the NEWEST parts. Degenerates to a
-        header-only summary when no budget remains. Never touches the head
-        or the kept tail."""
+    def _truncate_summary(self, ctx: RequestCtx, reason: str = "reactive") -> bool:
+        """Last-resort rung: shrink the existing summary to fit the threshold
+        budget, keeping the NEWEST parts. Degenerates to a header-only summary
+        when no budget remains. Never touches the head or the kept tail.
+
+        Reactive path only, except in strict mode, where the proactive ladder
+        walks this rung as well before refusing."""
         if not ctx.compacted or ctx.base_cut <= 0:
             return False
         idx = ctx.base_head
@@ -234,7 +247,8 @@ class Engine:
             Entry(head_len=ctx.base_head, summary=new_summary, cut=ctx.base_cut),
         )
         logger.info(
-            "reactive rung3: summary truncated (%d -> %d parts, ~%dk -> ~%dk est tokens) summary#%s",
+            "%s rung3: summary truncated (%d -> %d parts, ~%dk -> ~%dk est tokens) summary#%s",
+            reason,
             len(parts),
             len(kept),
             before // 1000,
