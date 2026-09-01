@@ -156,3 +156,266 @@ def test_formatters():
     assert agefmt(9) == "9s"
     assert agefmt(300) == "5m"
     assert agefmt(7300) == "2h"
+
+
+# --- session identity ----------------------------------------------------------
+#
+# The watcher's sid follows a conversation and splits when it branches. It is
+# display only: the store keys on full-depth chain hashes and never sees one.
+
+
+def _turn(msgs, i):
+    msgs.append({"role": "assistant", "content": [{"type": "text", "text": "x" * 4000}]})
+    msgs.append({"role": "user", "content": f"turn {i}"})
+    return msgs
+
+
+def _watch(app):
+    from cliffcompaction.ui import Term
+
+    w = Watcher(Term(), 0)
+    for ev in app.state.hub.backlog():
+        w.on_event(ev)
+    return w
+
+
+def _meta(session_id):
+    """Claude Code's shape: an opaque JSON blob in the documented
+    `metadata.user_id` field, carrying the conversation id."""
+    return {"user_id": json.dumps(
+        {"device_id": "d" * 8, "account_uuid": "a" * 8, "session_id": session_id}
+    )}
+
+
+def test_session_key_parses_only_the_shape_it_knows():
+    from cliffcompaction.dialects.anthropic import session_key
+    from cliffcompaction.dialects.openai_chat import DIALECT as OPENAI
+
+    assert session_key({"metadata": _meta("sess-1")}) == "sess-1"
+    assert session_key({}) is None
+    assert session_key({"metadata": "not a dict"}) is None
+    assert session_key({"metadata": {"user_id": "{bad json"}}) is None
+    assert session_key({"metadata": {"user_id": "{}"}}) is None
+    # A bare string is the documented per-USER id. Keying on it would merge
+    # every session a user has ever opened into one row.
+    assert session_key({"metadata": {"user_id": "user-42"}}) is None
+    assert OPENAI.session_key({"user": "user-42"}) is None
+
+
+def test_background_calls_share_the_session_they_ride_on():
+    # Captured from Claude Code: between typed messages it sends a
+    # prompt-suggestion request — the live history plus a synthetic user turn,
+    # same model, tools and sampling params as a real turn. Only the client's
+    # session id says it belongs to this conversation.
+    app = _app()
+    client = TestClient(app)
+    meta = _meta("sess-A")
+    msgs = [{"role": "user", "content": "one"}]
+    for word in ("two", "three", "four"):
+        client.post("/v1/messages",
+                    json={"model": "m", "messages": list(_turn(msgs, word)), "metadata": meta})
+        suggestion = [*msgs, {"role": "user", "content": "[SUGGESTION MODE: ...]"}]
+        client.post("/v1/messages",
+                    json={"model": "m", "messages": suggestion, "metadata": meta})
+
+    assert len({e["sid"] for e in app.state.hub.backlog()}) == 1
+    assert len(_watch(app).live_sessions()) == 1
+
+
+def test_client_session_ids_separate_identical_openings():
+    app = _app()
+    client = TestClient(app)
+    for label in ("A", "B"):
+        msgs = [{"role": "user", "content": "hello!"}]
+        for i in range(2):
+            client.post("/v1/messages",
+                        json={"model": "m", "messages": list(_turn(msgs, i)),
+                              "metadata": _meta(f"sess-{label}")})
+    assert len({e["sid"] for e in app.state.hub.backlog()}) == 2
+    assert len(_watch(app).live_sessions()) == 2
+
+
+def test_the_id_is_hashed_not_the_client_blob():
+    # The blob sits next to account and device identifiers, and this id goes
+    # out on an event stream any local process can read.
+    app = _app()
+    client = TestClient(app)
+    client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                      "metadata": _meta("sess-secret")})
+    blob = json.dumps(app.state.hub.backlog())
+    assert "sess-secret" not in blob
+    assert "aaaaaaaa" not in blob and "dddddddd" not in blob
+
+
+def test_without_a_client_session_id_the_root_hash_keys_the_row():
+    app = _app()
+    client = TestClient(app)
+    msgs = [{"role": "user", "content": "hello"}]
+    for i in range(3):
+        client.post("/v1/messages", json={"model": "m", "messages": list(_turn(msgs, i))})
+    # A rewind merges with its parent here. Without a client id, a branch and
+    # the scaffold's own background calls are the same shape, and inventing a
+    # split we cannot verify is the worse error of the two.
+    branch = msgs[:-4]
+    client.post("/v1/messages", json={"model": "m", "messages": list(_turn(branch, "b"))})
+    assert len({e["sid"] for e in app.state.hub.backlog()}) == 1
+    assert len(_watch(app).live_sessions()) == 1
+
+
+def test_oneshot_calls_ignore_the_client_session_id():
+    # The permission classifier is labelled with the session that fired it.
+    # Joining that row would put an uncompactable request inside it.
+    app = _app()
+    client = TestClient(app)
+    meta = _meta("sess-A")
+    msgs = [{"role": "user", "content": "one"}]
+    client.post("/v1/messages",
+                json={"model": "m", "messages": list(_turn(msgs, 0)), "metadata": meta})
+    for call in _classifier(3):
+        client.post("/v1/messages", json={"model": "m", "messages": call, "metadata": meta})
+
+    events = app.state.hub.backlog()
+    real = {e["sid"] for e in events if not e["oneshot"]}
+    ones = {e["sid"] for e in events if e["oneshot"]}
+    assert len(real) == 1 and len(ones) == 1
+    assert real != ones
+
+
+def _classifier(n_calls):
+    """Claude Code's permission classifier: fixed instruction, growing
+    transcript, never an assistant message."""
+    for i in range(n_calls):
+        yield [
+            {"role": "user", "content": "You are reviewing a tool call."},
+            {"role": "user", "content": "<transcript>" + "y" * (500 * (i + 1))},
+        ]
+
+
+def test_classifier_calls_stay_merged_and_make_no_row():
+    app = _app()
+    client = TestClient(app)
+    for msgs in _classifier(6):
+        client.post("/v1/messages", json={"model": "m", "messages": msgs})
+
+    events = app.state.hub.backlog()
+    assert len(events) == 6
+    assert all(e["oneshot"] for e in events)
+    assert len({e["sid"] for e in events}) == 1
+
+    w = _watch(app)
+    assert w.live_sessions() == []               # counted, never a session
+    assert w.oneshots.n == 6
+    assert w.requests == 6                       # real requests, real money
+    assert "one-shot" in w.render()
+
+
+def test_one_message_request_is_not_one_shot():
+    # A real session's opening turn must still start a row.
+    app = _app()
+    client = TestClient(app)
+    client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": "go"}]})
+    ev = app.state.hub.backlog()[0]
+    assert not ev["oneshot"]
+    assert len(_watch(app).live_sessions()) == 1
+
+
+def test_one_shots_never_pollute_lineage():
+    app = _app()
+    client = TestClient(app)
+    msgs = [{"role": "user", "content": "hello"}]
+    calls = _classifier(4)
+    for i in range(4):
+        client.post("/v1/messages", json={"model": "m", "messages": list(_turn(msgs, i))})
+        client.post("/v1/messages", json={"model": "m", "messages": next(calls)})
+
+    session = [e for e in app.state.hub.backlog() if not e["oneshot"]]
+    assert len({e["sid"] for e in session}) == 1  # interleaving changed nothing
+    w = _watch(app)
+    assert len(w.sessions) == 1 and w.oneshots.n == 4
+
+
+def test_reactive_replay_stays_one_session():
+    # One HTTP request emits an event per escalation rung; they are the same
+    # conversation, not one session per rung.
+    from test_escalation import PickyUpstream, fat_session
+
+    cfg = Config.from_env()
+    cfg.threshold_tokens = 8000
+    up = PickyUpstream(max_chars=20000)
+    app = create_app(cfg, transport=httpx.MockTransport(up.handler))
+    r = TestClient(app).post("/v1/messages", json={"model": "m", "messages": fat_session(8)})
+
+    assert r.status_code == 200
+    events = app.state.hub.backlog()
+    assert len(events) >= 2                      # at least one replay emitted
+    assert len({e["sid"] for e in events}) == 1
+    assert len(_watch(app).live_sessions()) == 1
+
+
+def test_events_without_the_field_still_make_rows():
+    # An old daemon, a new watcher: everything is a session, as before.
+    from cliffcompaction.ui import Term
+
+    w = Watcher(Term(), 0)
+    w.on_event({"sid": "abcd1234", "kind": "pass", "total": 2, "est_in": 100})
+    assert len(w.live_sessions()) == 1
+
+
+def test_one_shot_rule_across_dialects():
+    from cliffcompaction.dialects import anthropic, openai_chat, openai_responses
+    from cliffcompaction.proxy import is_oneshot
+
+    pairs = [
+        (anthropic.DIALECT,
+         [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+         [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]),
+        (openai_chat.DIALECT,
+         [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+         [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]),
+        (openai_responses.DIALECT,
+         [{"type": "message", "role": "user", "content": "a"},
+          {"type": "message", "role": "user", "content": "b"}],
+         # a model turn need not be an assistant message in this dialect
+         [{"type": "message", "role": "user", "content": "a"},
+          {"type": "function_call", "call_id": "c", "name": "bash", "arguments": "{}"}]),
+    ]
+    for dialect, oneshot, session in pairs:
+        assert is_oneshot(oneshot, dialect), dialect.name
+        assert not is_oneshot(session, dialect), dialect.name
+        assert not is_oneshot(oneshot[:1], dialect), dialect.name   # one message
+
+
+def test_identity_work_can_never_break_a_request(monkeypatch):
+    # The seam: session ids are display state, assigned before the request
+    # goes out. A client can put anything in that field, so if reading it
+    # blows up the row degrades to the root-keyed id and the request path
+    # carries on — same responses, same compaction.
+    import dataclasses
+
+    from cliffcompaction.dialects import anthropic
+    from cliffcompaction.engine import Engine
+
+    def boom(body):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(anthropic, "DIALECT", dataclasses.replace(anthropic.DIALECT, session_key=boom))
+
+    cfg = Config.from_env()
+    cfg.threshold_tokens = 2000
+    engine = Engine(cfg)
+    app = create_app(
+        cfg, engine=engine,
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"ok": True})),
+    )
+    client = TestClient(app)
+    msgs = [{"role": "user", "content": "hello"}]
+    for i in range(5):
+        r = client.post("/v1/messages", json={"model": "m", "messages": list(_turn(msgs, i)),
+                                              "metadata": _meta("sess-A")})
+        assert r.status_code == 200
+    assert len(engine.store) > 0                 # still compacting
+
+    from cliffcompaction.hashing import chain_hashes
+
+    root = chain_hashes([anthropic.digest_message(msgs[0])])[0][:12]
+    assert {e["sid"] for e in app.state.hub.backlog()} == {root}

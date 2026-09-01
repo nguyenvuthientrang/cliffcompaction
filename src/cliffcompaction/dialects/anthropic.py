@@ -13,6 +13,7 @@ Message shape notes:
 from __future__ import annotations
 
 import hashlib
+import json
 
 from ..config import Config
 from ..hashing import canonical_json, digest_obj
@@ -99,6 +100,34 @@ def is_summary_message(msg: dict) -> bool:
             if isinstance(b, dict) and b.get("type") == "text":
                 return (b.get("text") or "").startswith(SUMMARY_HEADER)
     return False
+
+
+def session_key(body: dict) -> str | None:
+    """The conversation id the client volunteered, if any.
+
+    `metadata.user_id` is a documented Anthropic field: an opaque
+    client-supplied string. Claude Code puts a JSON object there carrying a
+    `session_id`, which is the only place any client tells us which
+    conversation a request belongs to — and it labels the scaffold's own
+    background calls (prompt suggestions, recaps) with the session they ride
+    on, which no amount of inspecting the message array can recover.
+
+    Opaque means opaque: anything that is not that exact shape yields None and
+    the caller falls back. A bare string is NOT used — clients are told to put
+    a stable per-USER id there, and keying on that would merge every one of a
+    user's sessions into a single row.
+    """
+    meta = body.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("user_id")
+    if not isinstance(raw, str) or not raw.startswith("{"):
+        return None
+    try:
+        sid = json.loads(raw).get("session_id")
+    except (ValueError, AttributeError):
+        return None
+    return sid if isinstance(sid, str) and sid else None
 
 
 # --- summarization ------------------------------------------------------------
@@ -214,6 +243,7 @@ DIALECT = Dialect(
     summarize_message=summarize_message,
     user_message=user_message,
     is_summary_message=is_summary_message,
+    session_key=session_key,
     # A content-ful system message must precede an assistant message or end
     # the array; it may not precede the injected user-role summary.
     trim_from_head=_is_system,

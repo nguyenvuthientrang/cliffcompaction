@@ -122,3 +122,53 @@ def test_every_common_flag_reaches_the_daemon():
         if a.option_strings and not any(o in forwarded for o in a.option_strings)
     ]
     assert not dropped, f"accepted but never forwarded to the daemon: {dropped}"
+
+
+def test_restart_needs_an_installed_daemon(monkeypatch, capsys):
+    # `restart` is for picking up an upgrade, not for standing a daemon up.
+    import argparse
+
+    from cliffcompaction import cli, daemon
+
+    monkeypatch.setattr(daemon, "service_installed", lambda: False)
+    rc = cli.cmd_restart(argparse.Namespace(port=None))
+    assert rc == 1
+    assert "cliff enable" in capsys.readouterr().err
+
+
+def test_restart_leaves_the_service_definition_alone(monkeypatch):
+    # The daemon's flags live in the plist/unit. Restarting must not rewrite
+    # it, or an upgrade would quietly reset --threshold and friends.
+    from cliffcompaction import daemon
+
+    calls = []
+    monkeypatch.setattr(daemon, "_run", lambda cmd: calls.append(cmd) or _ok())
+    monkeypatch.setattr(daemon.sys, "platform", "darwin")
+    written = []
+    monkeypatch.setattr(daemon.Path, "write_bytes", lambda self, b: written.append(self))
+    daemon.restart_service()
+    assert written == []
+    assert any("kickstart" in " ".join(c) for c in calls)
+
+
+def _ok():
+    import subprocess
+
+    return subprocess.CompletedProcess([], 0, "", "")
+
+
+def test_status_reports_stale_code():
+    """A daemon keeps serving the code it started with; nothing about a
+    healthy old process says so."""
+    import httpx
+    from starlette.testclient import TestClient
+
+    from cliffcompaction.config import Config
+    from cliffcompaction.proxy import code_mtime, create_app
+
+    app = create_app(
+        Config.from_env(),
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})),
+    )
+    assert TestClient(app).get("/__cliff__/status").json()["code_stale"] is False
+    assert code_mtime() > 0

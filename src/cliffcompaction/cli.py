@@ -2,6 +2,7 @@
 
     cliff enable [options]                     # daily driver: supervised daemon + shell env wiring
     cliff disable                              # remove the daemon and env wiring
+    cliff restart                              # pick up an upgrade; keeps the daemon's flags
     cliff status                               # daemon / env / store health
     cliff watch                                # live view of sessions through the proxy
     cliff serve [--shadow] [--port N] ...      # run the proxy in the foreground
@@ -322,6 +323,44 @@ def cmd_status(args: argparse.Namespace) -> int:
             f"warning: port {port} is answered by another proxy, not the daemon "
             f"(a manual `cliff serve` still running?); stop it and re-run `cliff enable`"
         )
+    if status is not None and (status.get("code_stale") or "code_stale" not in status):
+        # Missing field rather than a false one: the daemon predates the check,
+        # which is itself the thing the check reports.
+        print(
+            "warning: cliffcompaction was installed or changed after the daemon "
+            "started, so the daemon is still serving the older code; "
+            "run `cliff restart`"
+        )
+    return 0
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    """Pick up new code without touching the service definition."""
+    from . import daemon
+
+    if not daemon.service_installed():
+        print("error: no daemon installed (run `cliff enable` first)", file=sys.stderr)
+        return 1
+    port = args.port if args.port is not None else Config.from_env().port
+    try:
+        daemon.restart_service()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    status = daemon.wait_healthy(port)
+    if status is None:
+        print(
+            f"error: daemon did not come back on port {port}; "
+            f"check the log at {daemon.log_path()}",
+            file=sys.stderr,
+        )
+        return 1
+    mode = "shadow" if status.get("shadow") else ("strict" if status.get("strict") else "active")
+    print(
+        f"cliff restarted on port {port} ({mode} mode, "
+        f"threshold ~{status.get('threshold_tokens', 0) // 1000}k tokens, "
+        f"keep_recent={status.get('keep_recent')})"
+    )
     return 0
 
 
@@ -359,6 +398,11 @@ def main(argv: list[str] | None = None) -> int:
     p_status = sub.add_parser("status", help="daemon / env / store health")
     p_status.add_argument("--port", type=int, default=None)
 
+    p_restart = sub.add_parser(
+        "restart", help="restart the daemon in place (pick up an upgrade); flags unchanged"
+    )
+    p_restart.add_argument("--port", type=int, default=None)
+
     p_watch = sub.add_parser("watch", help="live view of sessions through the proxy")
     p_watch.add_argument("--port", type=int, default=None)
 
@@ -375,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_disable(args)
     if args.cmd == "status":
         return cmd_status(args)
+    if args.cmd == "restart":
+        return cmd_restart(args)
     if args.cmd == "watch":
         return cmd_watch(args)
     return 2

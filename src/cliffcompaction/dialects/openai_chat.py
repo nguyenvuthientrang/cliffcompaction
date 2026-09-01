@@ -81,6 +81,12 @@ def is_summary_message(msg: dict) -> bool:
     )
 
 
+def session_key(body: dict) -> str | None:
+    """No conversation id in this dialect. `user` is a per-user id, not a
+    per-session one, so keying on it would merge a user's sessions."""
+    return None
+
+
 # --- summarization ------------------------------------------------------------
 
 
@@ -148,4 +154,5 @@ DIALECT = Dialect(
     summarize_message=summarize_message,
     user_message=user_message,
     is_summary_message=is_summary_message,
+    session_key=session_key,
 )

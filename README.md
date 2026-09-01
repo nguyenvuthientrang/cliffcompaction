@@ -12,6 +12,7 @@ cliff enable
 
 - `cliff enable` — installs the proxy as a supervised user service (launchd on macOS, systemd --user on Linux — auto-restarts, survives reboots) and wires `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` into your shell profile. Open a new terminal for the env vars to take effect.
 - `cliff status` — shows health.
+- `cliff restart` — picks up an upgrade, keeping the daemon's flags. A supervised daemon goes on serving the code it started with, so after `uv tool upgrade cliffcompaction` (or any reinstall) the new version does nothing until you run this. `cliff status` warns when that has happened.
 - `cliff disable` — reverses everything.
 
 For scoped, one-shot use (benchmarks, CI, trying it out):

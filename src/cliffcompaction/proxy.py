@@ -12,12 +12,15 @@ rather than forwarded. Every other failure still fails open, strict or not.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import json
 import logging
 import os
 import re
 import time
+from collections import OrderedDict
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 import httpx
@@ -67,6 +70,69 @@ def is_context_error(body: bytes) -> bool:
     return bool(_CONTEXT_ERROR_RE.search(text))
 
 
+def code_mtime() -> float:
+    """Newest source file of the running package.
+
+    A supervised daemon keeps serving the code it started with, so an upgrade
+    underneath it changes nothing until a restart — with no symptom, since the
+    old process stays perfectly healthy. Comparing this against the daemon's
+    start time is how `cliff status` notices.
+    """
+    try:
+        return max(p.stat().st_mtime for p in Path(__file__).parent.rglob("*.py"))
+    except Exception:
+        return 0.0
+
+
+def is_oneshot(msgs: list[dict], dialect) -> bool:
+    """Several messages and no model turn: not a session, however often it
+    recurs. `compact` bails on exactly this condition, and every escalation
+    rung sits downstream of it, so such a request is outside cliff's unit of
+    work at any threshold — grouping them under one id says so, where a
+    lineage would mint a fresh one per call.
+
+    Claude Code's auto-mode permission classifier is the volume case: a fixed
+    instruction and a growing transcript, never an assistant message. A ONE
+    message request is a real session's opening turn and is left alone.
+    """
+    try:
+        return len(msgs) >= 2 and not any(dialect.is_assistant(m) for m in msgs)
+    except Exception:
+        return False  # unknown shape: treat it as a session
+
+
+MAX_SESSIONS = 256
+
+
+def session_id(ctx, dialect, oneshot: bool) -> str:
+    """Display id for one request's conversation.
+
+    Prefer what the client says. Claude Code labels every request — including
+    its own background calls, which are otherwise indistinguishable from a
+    person typing — with the session it belongs to; no amount of inspecting
+    the message array recovers that. Without one, fall back to the history's
+    root hash: stable for the life of a conversation, and it merges a branch
+    with its parent rather than inventing a split we cannot verify.
+
+    Hashed, not passed through: the client's blob sits next to account and
+    device identifiers, and this id goes out on an event stream any local
+    process can read. 12 hex chars, as the watcher's columns assume.
+    """
+    root = ctx.chain[0][:12]
+    if oneshot:
+        # Not a conversation at any threshold; grouped under one id whatever
+        # the client claims (a permission classifier is labelled with the
+        # session it was fired from, and would otherwise join that row).
+        return root
+    try:
+        key = dialect.session_key(ctx.body)
+    except Exception:
+        return root
+    if not key:
+        return root
+    return hashlib.sha256(f"session:{key}".encode("utf-8")).hexdigest()[:12]
+
+
 def create_app(
     cfg: Config,
     engine: Engine | None = None,
@@ -74,6 +140,9 @@ def create_app(
 ) -> Starlette:
     engine = engine or Engine(cfg)
     hub = EventHub()
+    # Distinct conversations seen, for `cliff status`. Bounded and display
+    # only; one-shots never enter it.
+    seen_sids: OrderedDict[str, None] = OrderedDict()
     started_at = time.time()
     _debug_seq = itertools.count(1)
 
@@ -93,17 +162,33 @@ def create_app(
         return False
 
     def emit_request(ctx, dialect) -> None:
-        """One event per handled request. Observability only."""
+        """One event per handled request. Observability only, and it runs
+        before the request goes out: failures never propagate."""
+        try:
+            _emit_request(ctx, dialect)
+        except Exception:
+            logger.exception("event emit failed (request unaffected)")
+
+    def _emit_request(ctx, dialect) -> None:
         if ctx is None or not ctx.chain:
             return
         if isinstance(ctx.body, dict) and is_probe(ctx.body):
             return
         model = ctx.body.get("model") if isinstance(ctx.body, dict) else None
+        # One-shots keep the old root-keyed id — they are the traffic that
+        # should stay merged — and never enter the tracker, so they cannot
+        # fill it with sessions that will never be seen again.
+        oneshot = is_oneshot(ctx.msgs, dialect)
+        sid = session_id(ctx, dialect, oneshot)
+        if not oneshot:
+            seen_sids[sid] = None
+            seen_sids.move_to_end(sid)
+            while len(seen_sids) > MAX_SESSIONS:
+                seen_sids.popitem(last=False)
         hub.emit(
             kind="compact" if ctx.compacted else ("match" if ctx.modified else "pass"),
-            # The first chain hash identifies the conversation: same system
-            # prompt + first message => same session, no client cooperation.
-            sid=ctx.chain[0][:12],
+            sid=sid,
+            oneshot=oneshot,
             model=model if isinstance(model, str) else "?",
             dialect=dialect.name,
             cut=ctx.base_cut,
@@ -132,6 +217,14 @@ def create_app(
                 "compacted": ctx.compacted,
                 "est_tokens_in": ctx.est_tokens_in,
                 "est_tokens_out": ctx.est_tokens_out,
+                # Everything but the message array: model, sampling params,
+                # output caps, tools. What distinguishes a scaffold's own
+                # background calls from a conversational turn lives here.
+                "request_fields": {
+                    k: (f"<{len(v)} tools>" if k == "tools" and isinstance(v, list) else v)
+                    for k, v in ctx.body.items()
+                    if k != dialect.messages_key and k != "system"
+                },
                 "incoming_messages": ctx.msgs,
                 "outgoing_messages": ctx.substituted if ctx.modified else None,
             }
@@ -406,6 +499,10 @@ def create_app(
                 "threshold_tokens": cfg.threshold_tokens,
                 "keep_recent": cfg.keep_recent,
                 "store_entries": len(engine.store),
+                "sessions_tracked": len(seen_sids),
+                # Installed under a running daemon: it is still serving the
+                # code it started with, and looks perfectly healthy doing it.
+                "code_stale": code_mtime() > started_at,
                 "watchers": hub.subscribers,
                 "uptime_s": int(time.time() - started_at),
             }

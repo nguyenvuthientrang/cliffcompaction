@@ -204,6 +204,25 @@ def start_service(port: int, serve_args: list[str]) -> None:
         )
 
 
+def restart_service() -> None:
+    """Restart the installed service in place, leaving the plist/unit alone.
+
+    Distinct from `enable`, which rewrites the service definition: the flags
+    are baked in there, so restarting must not touch it or an upgrade would
+    silently reset them.
+    """
+    if sys.platform == "darwin":
+        res = _run(["launchctl", "kickstart", "-k", f"{_gui_domain()}/{LABEL}"])
+        if res.returncode != 0:
+            raise RuntimeError(f"launchctl kickstart failed: {res.stderr.strip()}")
+    elif sys.platform.startswith("linux"):
+        res = _run(["systemctl", "--user", "restart", SYSTEMD_UNIT])
+        if res.returncode != 0:
+            raise RuntimeError(f"systemctl restart failed: {res.stderr.strip()}")
+    else:
+        raise RuntimeError(f"unsupported platform: {sys.platform}")
+
+
 def stop_service() -> None:
     if sys.platform == "darwin":
         _run(["launchctl", "bootout", f"{_gui_domain()}/{LABEL}"])

@@ -53,6 +53,9 @@ class Dialect:
     user_message: Callable[[str], dict]
     # True if this message IS a previously injected cliff summary.
     is_summary_message: Callable[[dict], bool]
+    # A stable per-conversation key the CLIENT supplied, or None. Display only
+    # (`cliff watch`); nothing in the request path reads it.
+    session_key: Callable[[dict], str | None]
     # Request-body key holding the message list ("messages"; "input" for the
     # Responses API).
     messages_key: str = "messages"
