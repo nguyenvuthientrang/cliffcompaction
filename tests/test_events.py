@@ -262,23 +262,28 @@ def test_without_a_client_session_id_the_root_hash_keys_the_row():
     assert len(_watch(app).live_sessions()) == 1
 
 
-def test_oneshot_calls_ignore_the_client_session_id():
-    # The permission classifier is labelled with the session that fired it.
-    # Joining that row would put an uncompactable request inside it.
+def test_side_calls_keep_the_session_id_but_stay_out_of_its_row():
+    # The permission classifier is labelled with the session that fired it, and
+    # that is where its cost lands — but it is not one of that session's turns.
     app = _app()
     client = TestClient(app)
     meta = _meta("sess-A")
     msgs = [{"role": "user", "content": "one"}]
     client.post("/v1/messages",
                 json={"model": "m", "messages": list(_turn(msgs, 0)), "metadata": meta})
+    turn = app.state.hub.backlog()[0]
     for call in _classifier(3):
         client.post("/v1/messages", json={"model": "m", "messages": call, "metadata": meta})
 
     events = app.state.hub.backlog()
-    real = {e["sid"] for e in events if not e["oneshot"]}
-    ones = {e["sid"] for e in events if e["oneshot"]}
-    assert len(real) == 1 and len(ones) == 1
-    assert real != ones
+    assert [e["aux"] for e in events] == [False, True, True, True]
+    assert len({e["sid"] for e in events}) == 1   # all one session
+
+    w = _watch(app)
+    (row,) = w.live_sessions()
+    assert w.requests == 4                        # every call is real money
+    assert row.total == turn["total"]             # the row is the turn's, only
+    assert row.est == turn["est_in"]
 
 
 def _classifier(n_calls):
@@ -291,7 +296,9 @@ def _classifier(n_calls):
         ]
 
 
-def test_classifier_calls_stay_merged_and_make_no_row():
+def test_classifier_calls_make_no_row_even_without_a_client_id():
+    # Two user messages and no model turn cannot be an opening turn, so this
+    # needs no prior sighting of the session to be recognised.
     app = _app()
     client = TestClient(app)
     for msgs in _classifier(6):
@@ -299,27 +306,44 @@ def test_classifier_calls_stay_merged_and_make_no_row():
 
     events = app.state.hub.backlog()
     assert len(events) == 6
-    assert all(e["oneshot"] for e in events)
-    assert len({e["sid"] for e in events}) == 1
+    assert all(e["aux"] for e in events)
 
     w = _watch(app)
-    assert w.live_sessions() == []               # counted, never a session
-    assert w.oneshots.n == 6
+    assert w.live_sessions() == []               # never a session
     assert w.requests == 6                       # real requests, real money
-    assert "one-shot" in w.render()
+    assert len(w.feed) == 6 and "aux" in w.render()
 
 
-def test_one_message_request_is_not_one_shot():
+def test_a_background_call_after_the_session_speaks_is_a_side_call():
+    # One user message, no model turn — the shape of an opening turn. What
+    # rules it out is that this session has already had one.
+    app = _app()
+    client = TestClient(app)
+    meta = _meta("sess-A")
+    msgs = [{"role": "user", "content": "one"}]
+    client.post("/v1/messages",
+                json={"model": "m", "messages": list(_turn(msgs, 0)), "metadata": meta})
+    client.post("/v1/messages",
+                json={"model": "m", "messages": [{"role": "user", "content": "x" * 4000}],
+                      "metadata": meta})
+
+    opening, side = app.state.hub.backlog()
+    assert not opening["aux"] and side["aux"]
+    (row,) = _watch(app).live_sessions()
+    assert row.est == opening["est_in"]           # the 4k call left no mark
+
+
+def test_one_message_request_is_not_a_side_call():
     # A real session's opening turn must still start a row.
     app = _app()
     client = TestClient(app)
     client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": "go"}]})
     ev = app.state.hub.backlog()[0]
-    assert not ev["oneshot"]
+    assert not ev["aux"]
     assert len(_watch(app).live_sessions()) == 1
 
 
-def test_one_shots_never_pollute_lineage():
+def test_side_calls_never_pollute_lineage():
     app = _app()
     client = TestClient(app)
     msgs = [{"role": "user", "content": "hello"}]
@@ -328,10 +352,12 @@ def test_one_shots_never_pollute_lineage():
         client.post("/v1/messages", json={"model": "m", "messages": list(_turn(msgs, i))})
         client.post("/v1/messages", json={"model": "m", "messages": next(calls)})
 
-    session = [e for e in app.state.hub.backlog() if not e["oneshot"]]
+    events = app.state.hub.backlog()
+    session = [e for e in events if not e["aux"]]
     assert len({e["sid"] for e in session}) == 1  # interleaving changed nothing
     w = _watch(app)
-    assert len(w.sessions) == 1 and w.oneshots.n == 4
+    assert len(w.sessions) == 1
+    assert sum(e["aux"] for e in events) == 4
 
 
 def test_reactive_replay_stays_one_session():
@@ -361,9 +387,9 @@ def test_events_without_the_field_still_make_rows():
     assert len(w.live_sessions()) == 1
 
 
-def test_one_shot_rule_across_dialects():
+def test_side_call_rule_across_dialects():
     from cliffcompaction.dialects import anthropic, openai_chat, openai_responses
-    from cliffcompaction.proxy import is_oneshot
+    from cliffcompaction.proxy import is_side_call
 
     pairs = [
         (anthropic.DIALECT,
@@ -379,10 +405,14 @@ def test_one_shot_rule_across_dialects():
          [{"type": "message", "role": "user", "content": "a"},
           {"type": "function_call", "call_id": "c", "name": "bash", "arguments": "{}"}]),
     ]
-    for dialect, oneshot, session in pairs:
-        assert is_oneshot(oneshot, dialect), dialect.name
-        assert not is_oneshot(session, dialect), dialect.name
-        assert not is_oneshot(oneshot[:1], dialect), dialect.name   # one message
+    for dialect, side, session in pairs:
+        assert is_side_call(side, dialect, seen=False), dialect.name
+        # A model turn is a turn whether or not the session has been seen.
+        assert not is_side_call(session, dialect, seen=False), dialect.name
+        assert not is_side_call(session, dialect, seen=True), dialect.name
+        # One user message: an opening turn until the session has spoken.
+        assert not is_side_call(side[:1], dialect, seen=False), dialect.name
+        assert is_side_call(side[:1], dialect, seen=True), dialect.name
 
 
 def test_identity_work_can_never_break_a_request(monkeypatch):
@@ -421,27 +451,27 @@ def test_identity_work_can_never_break_a_request(monkeypatch):
     assert {e["sid"] for e in app.state.hub.backlog()} == {root}
 
 
-def test_a_sessions_opening_turn_is_not_a_oneshot():
+def test_a_sessions_opening_turn_is_not_a_side_call():
     # Captured from Claude Code: the first request of a session is
     # [user, in-array system directive] — two messages, no model turn, which
     # the raw-length rule swept up as a classifier call. The row then only
     # appeared on the second message, the first with an assistant turn in it.
     from cliffcompaction.dialects import detect
-    from cliffcompaction.proxy import is_oneshot
+    from cliffcompaction.proxy import is_side_call
 
     dialect = detect("/v1/messages")
     opening = [
         {"role": "user", "content": "hello"},
         {"role": "system", "content": "Available agent types for the Agent tool: ..."},
     ]
-    assert not is_oneshot(opening, dialect)
+    assert not is_side_call(opening, dialect, seen=False)
 
     app = _app()
     client = TestClient(app)
     client.post("/v1/messages",
                 json={"model": "m", "messages": opening, "metadata": _meta("sess-A")})
     events = app.state.hub.backlog()
-    assert len(events) == 1 and not events[0]["oneshot"]
+    assert len(events) == 1 and not events[0]["aux"]
     assert len(_watch(app).live_sessions()) == 1          # renders immediately
 
     # ...and the classifier, two user messages and no model turn, still does not.

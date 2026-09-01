@@ -84,25 +84,29 @@ def code_mtime() -> float:
         return 0.0
 
 
-def is_oneshot(msgs: list[dict], dialect) -> bool:
-    """Several messages and no model turn: not a session, however often it
-    recurs. `compact` bails on exactly this condition, and every escalation
-    rung sits downstream of it, so such a request is outside cliff's unit of
-    work at any threshold — grouping them under one id says so, where a
-    lineage would mint a fresh one per call.
+def is_side_call(msgs: list[dict], dialect, seen: bool) -> bool:
+    """No model turn: a scaffold's own call, not a turn of the conversation.
 
-    Claude Code's auto-mode permission classifier is the volume case: a fixed
-    instruction and a growing transcript, never an assistant message.
+    `compact` bails on exactly this condition, and every escalation rung sits
+    downstream of it, so such a request is outside cliff's unit of work at any
+    threshold. It still costs money and still belongs to a session, so it is
+    reported — but it is kept out of that session's row, whose depth and size
+    describe a conversation these calls are not part of.
 
-    Two USER messages, not two messages: a session's opening turn arrives as
-    [user, in-array system directive], which has no model turn either. Counting
-    raw length swept it up here, so a new session stayed invisible in the
-    watcher until its second message — the first one carrying an assistant
-    turn. A one-message request is an opening turn too, and is left alone.
+    A session's opening turn has no model turn either, and must not be swept up
+    here: it is what puts a new session on screen. Two signals separate them.
+    An opening turn carries exactly one user message ([user] or [user, in-array
+    system directive]), so two or more is proof of something else — Claude
+    Code's permission classifier, a fixed instruction and a growing transcript,
+    is the volume case. And a session that has already spoken cannot be opening
+    again, which catches the single-message background calls that shape alone
+    cannot distinguish from a first turn.
     """
     try:
-        if len(msgs) < 2 or any(dialect.is_assistant(m) for m in msgs):
+        if any(dialect.is_assistant(m) for m in msgs):
             return False
+        if seen:
+            return True
         return sum(1 for m in msgs if m.get("role") == "user") >= 2
     except Exception:
         return False  # unknown shape: treat it as a session
@@ -111,7 +115,7 @@ def is_oneshot(msgs: list[dict], dialect) -> bool:
 MAX_SESSIONS = 256
 
 
-def session_id(ctx, dialect, oneshot: bool) -> str:
+def session_id(ctx, dialect) -> str:
     """Display id for one request's conversation.
 
     Prefer what the client says. Claude Code labels every request — including
@@ -126,11 +130,6 @@ def session_id(ctx, dialect, oneshot: bool) -> str:
     process can read. 12 hex chars, as the watcher's columns assume.
     """
     root = ctx.chain[0][:12]
-    if oneshot:
-        # Not a conversation at any threshold; grouped under one id whatever
-        # the client claims (a permission classifier is labelled with the
-        # session it was fired from, and would otherwise join that row).
-        return root
     try:
         key = dialect.session_key(ctx.body)
     except Exception:
@@ -147,8 +146,8 @@ def create_app(
 ) -> Starlette:
     engine = engine or Engine(cfg)
     hub = EventHub()
-    # Distinct conversations seen, for `cliff status`. Bounded and display
-    # only; one-shots never enter it.
+    # Distinct conversations that have taken a turn, for `cliff status` — and
+    # the memory `is_side_call` reads. Bounded, and display only.
     seen_sids: OrderedDict[str, None] = OrderedDict()
     started_at = time.time()
     _debug_seq = itertools.count(1)
@@ -182,12 +181,13 @@ def create_app(
         if isinstance(ctx.body, dict) and is_probe(ctx.body):
             return
         model = ctx.body.get("model") if isinstance(ctx.body, dict) else None
-        # One-shots keep the old root-keyed id — they are the traffic that
-        # should stay merged — and never enter the tracker, so they cannot
-        # fill it with sessions that will never be seen again.
-        oneshot = is_oneshot(ctx.msgs, dialect)
-        sid = session_id(ctx, dialect, oneshot)
-        if not oneshot:
+        # A side call is labelled with the session that fired it, so its cost
+        # stays attributable, but never enters the tracker: only a turn makes a
+        # session "seen", and only that keeps the opening-turn exemption from
+        # applying to every background call that follows.
+        sid = session_id(ctx, dialect)
+        aux = is_side_call(ctx.msgs, dialect, sid in seen_sids)
+        if not aux:
             seen_sids[sid] = None
             seen_sids.move_to_end(sid)
             while len(seen_sids) > MAX_SESSIONS:
@@ -195,7 +195,7 @@ def create_app(
         hub.emit(
             kind="compact" if ctx.compacted else ("match" if ctx.modified else "pass"),
             sid=sid,
-            oneshot=oneshot,
+            aux=aux,
             model=model if isinstance(model, str) else "?",
             dialect=dialect.name,
             cut=ctx.base_cut,

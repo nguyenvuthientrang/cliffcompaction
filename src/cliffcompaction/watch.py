@@ -99,30 +99,11 @@ class Session:
         return " " * (width - len(pts)) + "".join(out)
 
 
-class OneShots:
-    """Requests with no turn boundary for cliff to cut on — the permission
-    classifier and its kind. They recur forever without ever becoming a
-    conversation, so they are counted here rather than given a row."""
-
-    def __init__(self) -> None:
-        self.n = 0
-        self.est = 0
-        self.sid = ""
-        self.last = 0.0
-
-    def update(self, ev: dict) -> None:
-        self.n += 1
-        self.est = ev.get("est_out") or ev.get("est_in") or 0
-        self.sid = ev.get("sid") or self.sid
-        self.last = ev.get("t") or time.time()
-
-
 class Watcher:
     def __init__(self, term: Term, port: int) -> None:
         self.term = term
         self.port = port
         self.sessions: dict[str, Session] = {}
-        self.oneshots = OneShots()
         self.feed: deque[dict] = deque(maxlen=FEED)
         self.requests = 0
         self.compactions = 0
@@ -142,10 +123,10 @@ class Watcher:
             return
         self.window_start = min(self.window_start, ev.get("t") or time.time())
         self.requests += 1
-        if ev.get("oneshot"):
-            # Real traffic and real money, but never a session: no row, and no
-            # sparkline — its size tracks tool-call count, not the context.
-            self.oneshots.update(ev)
+        if ev.get("aux"):
+            # Real traffic and real money, but not a turn of the conversation:
+            # it goes to the feed, and stays out of the session's row, whose
+            # depth and size describe a context this request is not part of.
             self.feed.append(ev)
             return
         if ev.get("kind") == "compact":
@@ -210,22 +191,6 @@ class Watcher:
                 + t.c(FAINT, "%6s" % agefmt(age))
             )
 
-        one = self.oneshots
-        if one.n and now - one.last < DROP_AFTER:
-            # Same columns as a session row, so the counts line up, but no
-            # sparkline: there is no trajectory here, only recurrence.
-            lines.append(
-                "  " + t.c(FAINT, "◦")
-                + " " + t.c(FAINT, one.sid[:4])
-                + "  " + t.c(DIM, "one-shot".ljust(15))
-                + t.c(FAINT, "".ljust(10))
-                + " " * sw
-                + t.c(DIM, "%12s" % f"{one.n:,} reqs")
-                + t.c(DIM, "%7s" % kfmt(one.est))
-                + t.c(FAINT, "%5s" % "—")
-                + t.c(FAINT, "%6s" % agefmt(now - one.last))
-            )
-
         # Feed gets whatever vertical space is left.
         used = len(lines) + 8
         room = max(3, rows - used)
@@ -265,8 +230,11 @@ class Watcher:
             return ("  " + t.c(DIM, clock) + " " + t.c(FAINT, sid) + "  "
                     + t.c(BRAND, "· match   ") + t.c(DIM, body))
         body = f"{ev.get('total')} msgs".ljust(20) + f"{kfmt(ev.get('est_in') or 0)} est"
+        # Side calls keep their session's id — that is where the cost lands —
+        # and say plainly that they are not one of its turns.
+        label = "· aux     " if ev.get("aux") else "· pass    "
         return ("  " + t.c(DIM, clock) + " " + t.c(FAINT, sid) + "  "
-                + t.c(FAINT, "· pass    ") + t.c(DIM, body))
+                + t.c(FAINT, label) + t.c(DIM, body))
 
 
 async def _stream(w: Watcher) -> None:
