@@ -202,6 +202,26 @@ def test_session_key_parses_only_the_shape_it_knows():
     assert OPENAI.session_key({"user": "user-42"}) is None
 
 
+def test_responses_session_key_reads_the_clients_cache_label():
+    from cliffcompaction.dialects.openai_responses import session_key
+
+    # Codex's shape: the thread id, spelled twice in one request.
+    assert session_key({"prompt_cache_key": "thread-1"}) == "thread-1"
+    assert session_key({"client_metadata": {"thread_id": "thread-1"}}) == "thread-1"
+    assert (
+        session_key(
+            {"prompt_cache_key": "thread-1", "client_metadata": {"thread_id": "thread-1"}}
+        )
+        == "thread-1"
+    )
+    assert session_key({}) is None
+    assert session_key({"prompt_cache_key": ""}) is None
+    assert session_key({"client_metadata": "not a dict"}) is None
+    assert session_key({"client_metadata": {}}) is None
+    # Per-USER, like the other dialects: keying on it would merge sessions.
+    assert session_key({"user": "user-42"}) is None
+
+
 def test_background_calls_share_the_session_they_ride_on():
     # Captured from Claude Code: between typed messages it sends a
     # prompt-suggestion request — the live history plus a synthetic user turn,

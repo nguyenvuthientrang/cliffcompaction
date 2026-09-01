@@ -149,8 +149,25 @@ def group_turns(items: list[dict]) -> list[list[dict]]:
 
 
 def session_key(body: dict) -> str | None:
-    """No conversation id in this dialect. `user` is a per-user id, not a
-    per-session one, so keying on it would merge a user's sessions."""
+    """The API defines no conversation id, but clients that resend the whole
+    `input` need cache affinity and label the request themselves.
+
+    `prompt_cache_key` is that label (Codex sends its thread id there, stable
+    across a session's turns); `client_metadata.thread_id` is the same value
+    when present. Neither is a fallback for the other's absence so much as two
+    spellings of one fact — take whichever the client offers.
+
+    Not `user`: that is a per-user id, and keying on it would merge every
+    session a person has open.
+    """
+    key = body.get("prompt_cache_key")
+    if isinstance(key, str) and key:
+        return key
+    meta = body.get("client_metadata")
+    if isinstance(meta, dict):
+        tid = meta.get("thread_id")
+        if isinstance(tid, str) and tid:
+            return tid
     return None
 
 
