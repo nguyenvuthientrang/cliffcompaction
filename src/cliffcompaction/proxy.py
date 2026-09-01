@@ -92,11 +92,18 @@ def is_oneshot(msgs: list[dict], dialect) -> bool:
     lineage would mint a fresh one per call.
 
     Claude Code's auto-mode permission classifier is the volume case: a fixed
-    instruction and a growing transcript, never an assistant message. A ONE
-    message request is a real session's opening turn and is left alone.
+    instruction and a growing transcript, never an assistant message.
+
+    Two USER messages, not two messages: a session's opening turn arrives as
+    [user, in-array system directive], which has no model turn either. Counting
+    raw length swept it up here, so a new session stayed invisible in the
+    watcher until its second message — the first one carrying an assistant
+    turn. A one-message request is an opening turn too, and is left alone.
     """
     try:
-        return len(msgs) >= 2 and not any(dialect.is_assistant(m) for m in msgs)
+        if len(msgs) < 2 or any(dialect.is_assistant(m) for m in msgs):
+            return False
+        return sum(1 for m in msgs if m.get("role") == "user") >= 2
     except Exception:
         return False  # unknown shape: treat it as a session
 

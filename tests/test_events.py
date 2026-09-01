@@ -419,3 +419,33 @@ def test_identity_work_can_never_break_a_request(monkeypatch):
 
     root = chain_hashes([anthropic.digest_message(msgs[0])])[0][:12]
     assert {e["sid"] for e in app.state.hub.backlog()} == {root}
+
+
+def test_a_sessions_opening_turn_is_not_a_oneshot():
+    # Captured from Claude Code: the first request of a session is
+    # [user, in-array system directive] — two messages, no model turn, which
+    # the raw-length rule swept up as a classifier call. The row then only
+    # appeared on the second message, the first with an assistant turn in it.
+    from cliffcompaction.dialects import detect
+    from cliffcompaction.proxy import is_oneshot
+
+    dialect = detect("/v1/messages")
+    opening = [
+        {"role": "user", "content": "hello"},
+        {"role": "system", "content": "Available agent types for the Agent tool: ..."},
+    ]
+    assert not is_oneshot(opening, dialect)
+
+    app = _app()
+    client = TestClient(app)
+    client.post("/v1/messages",
+                json={"model": "m", "messages": opening, "metadata": _meta("sess-A")})
+    events = app.state.hub.backlog()
+    assert len(events) == 1 and not events[0]["oneshot"]
+    assert len(_watch(app).live_sessions()) == 1          # renders immediately
+
+    # ...and the classifier, two user messages and no model turn, still does not.
+    for call in _classifier(2):
+        client.post("/v1/messages", json={"model": "m", "messages": call,
+                                          "metadata": _meta("sess-A")})
+    assert len(_watch(app).live_sessions()) == 1
