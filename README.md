@@ -80,7 +80,7 @@ Only over-budget requests are affected. Every other failure still fails open, an
 
 | Flag / env var | Default | Meaning |
 |---|---|---|
-| `--threshold` / `CLIFF_THRESHOLD_TOKENS` | 200000 | proactive compaction trigger (est. tokens) |
+| `--threshold` / `CLIFF_THRESHOLD_TOKENS` | 200000 | proactive compaction trigger (est. tokens; chars/4 runs ~15% under the provider's own count on code, so compare with your client's context meter and set accordingly) |
 | `--keep-recent` / `CLIFF_KEEP_RECENT` | 3 | recent assistant-step turns kept verbatim |
 | `--thought-max-chars` / `CLIFF_THOUGHT_MAX_CHARS` | 0 (unlimited) | cap on assistant text in summaries |
 | `--thinking-max-chars` / `CLIFF_THINKING_MAX_CHARS` | 0 (unlimited) | cap on thinking text in summaries, independent of the thought cap |
