@@ -1,15 +1,18 @@
 """cliff CLI.
 
     cliff enable [options]                     # daily driver: supervised daemon + shell env wiring
-    cliff disable                              # remove the daemon and env wiring
-    cliff restart                              # pick up an upgrade; keeps the daemon's flags
-    cliff status                               # daemon / env / store health
-    cliff watch                                # live view of sessions through the proxy
+    cliff enable --name X --port N [options]   # an additional daemon (own port/flags/log), no env wiring
+    cliff disable [--name X]                   # remove the daemon (and env wiring, for the default)
+    cliff restart [--name X]                   # pick up an upgrade; keeps the daemon's flags
+    cliff status [--name X]                    # daemon / env / store health
+    cliff watch [--name X]                     # live view of sessions through the proxy
     cliff serve [--shadow] [--port N] ...      # run the proxy in the foreground
     cliff run [--shadow] [options] -- CMD ...  # wrap one command: proxy up, env set, run, tear down
 
 `cliff enable` and `cliff run` set ANTHROPIC_BASE_URL and OPENAI_BASE_URL so
-any scaffold talks through the proxy with zero integration code.
+any scaffold talks through the proxy with zero integration code. Named
+instances are for clients you point at a port yourself (a Codex model
+provider, a second upstream with its own threshold).
 """
 
 from __future__ import annotations
@@ -169,21 +172,61 @@ def _serve_args_from(args: argparse.Namespace) -> list[str]:
     return out
 
 
+_BAD_NAME = object()
+
+
+def _instance(args: argparse.Namespace):
+    """The validated --name (None for the default), or _BAD_NAME after printing."""
+    from . import daemon
+
+    try:
+        return daemon.validate_name(getattr(args, "name", None))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _BAD_NAME
+
+
+def _resolve_port(args: argparse.Namespace, name: str | None) -> int:
+    """--port if given, else the port baked into the installed service, else the default."""
+    from . import daemon
+
+    if args.port is not None:
+        return args.port
+    installed = daemon.installed_port(name)
+    if installed is not None:
+        return installed
+    return Config.from_env().port
+
+
+def _with_name(cmd: str, name: str | None) -> str:
+    return cmd if name is None else f"{cmd} --name {name}"
+
+
 def cmd_enable(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     from . import daemon
 
-    port = args.port if args.port is not None else Config.from_env().port
-    if not daemon.service_running()[0] and daemon.port_in_use(port):
+    name = _instance(args)
+    if name is _BAD_NAME:
+        return 1
+    if name is not None and args.port is None:
         print(
-            f"error: port {port} is already in use (a manual `cliff serve`?). "
-            f"Stop it first, or pass --port for a different one.",
+            f"error: a named instance needs its own port: "
+            f"cliff enable --name {name} --port N ...",
+            file=sys.stderr,
+        )
+        return 1
+    port = args.port if args.port is not None else Config.from_env().port
+    if not daemon.service_running(name)[0] and daemon.port_in_use(port):
+        print(
+            f"error: port {port} is already in use (a manual `cliff serve`, or another "
+            f"cliff instance?). Stop it first, or pass --port for a different one.",
             file=sys.stderr,
         )
         return 1
     try:
-        daemon.start_service(port, _serve_args_from(args))
+        daemon.start_service(port, _serve_args_from(args), name)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -191,14 +234,16 @@ def cmd_enable(args: argparse.Namespace) -> int:
     if status is None:
         print(
             f"error: daemon installed but not responding on port {port}; "
-            f"check {daemon.log_path()}",
+            f"check {daemon.log_path(name)}",
             file=sys.stderr,
         )
         return 1
     profile = Path(args.profile) if args.profile else daemon.default_profile()
-    if not args.no_env:
+    # Only one daemon can own ANTHROPIC_BASE_URL/OPENAI_BASE_URL: the default.
+    wired = name is None and not args.no_env
+    if wired:
         daemon.wire_profile(profile, port)
-    _print_enable_screen(status, port, profile, wired=not args.no_env)
+    _print_enable_screen(status, port, profile, wired=wired, name=name)
     return 0
 
 
@@ -206,7 +251,9 @@ def _pad(text: str, width: int) -> str:
     """Left-align in a column, always leaving a gap when the text overflows."""
     return text.ljust(width) if len(text) < width else text + "  """
 
-def _print_enable_screen(status: dict, port: int, profile, wired: bool) -> None:
+def _print_enable_screen(
+    status: dict, port: int, profile, wired: bool, name: str | None = None
+) -> None:
     from pathlib import Path
 
     from . import daemon
@@ -235,9 +282,21 @@ def _print_enable_screen(status: dict, port: int, profile, wired: bool) -> None:
     lines = [
         row(ok, "daemon", f"supervised on 127.0.0.1:{port}", "auto-restarts, survives reboots"),
     ]
+    if name is not None:
+        lines.append(row(ok, "instance", name, "alongside the default daemon"))
     if wired:
         lines.append(
             row(ok, "env", f"wired in {short(profile)}", "ANTHROPIC_BASE_URL, OPENAI_BASE_URL")
+        )
+    elif name is not None:
+        lines.append(
+            row(
+                "!",
+                "env",
+                "not wired (named instance)",
+                f"point your client at http://127.0.0.1:{port}",
+                mark_rgb=YELLOW,
+            )
         )
     else:
         lines.append(
@@ -251,15 +310,21 @@ def _print_enable_screen(status: dict, port: int, profile, wired: bool) -> None:
         )
     lines += [
         row(ok, "config", f"threshold {threshold} {dot} keep {status.get('keep_recent')} {dot} {mode}", ""),
-        row(" ", "logs", short(daemon.log_path()), ""),
+        row(" ", "logs", short(daemon.log_path(name)), ""),
     ]
 
     steps = [
         ("open a new terminal", "agents pick up the env there"),
         ("run your agent as usual", "no flags, no integration"),
-        ("cliff status", f"check on it {dot} cliff disable turns it off"),
+        (
+            _with_name("cliff status", name),
+            f"check on it {dot} {_with_name('cliff disable', name)} turns it off",
+        ),
     ]
-    if not wired:
+    if name is not None:
+        steps[0] = (f"point your client at http://127.0.0.1:{port}", "e.g. a Codex model provider base_url")
+        steps[1] = ("run it as usual", "the default daemon keeps serving the env")
+    elif not wired:
         steps[0] = (f"export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}", "and OPENAI_BASE_URL")
     lines += ["", term.rule("next"), ""]
     for i, (text, hint) in enumerate(steps, 1):
@@ -273,8 +338,10 @@ def _print_enable_screen(status: dict, port: int, profile, wired: bool) -> None:
 def cmd_watch(args: argparse.Namespace) -> int:
     from . import watch
 
-    port = args.port if args.port is not None else Config.from_env().port
-    return watch.run(port)
+    name = _instance(args)
+    if name is _BAD_NAME:
+        return 1
+    return watch.run(_resolve_port(args, name))
 
 
 def cmd_disable(args: argparse.Namespace) -> int:
@@ -282,22 +349,35 @@ def cmd_disable(args: argparse.Namespace) -> int:
 
     from . import daemon
 
-    daemon.stop_service()
+    name = _instance(args)
+    if name is _BAD_NAME:
+        return 1
+    daemon.stop_service(name)
+    if name is not None:
+        print(f"cliffcompaction instance {name!r} disabled: daemon removed")
+        return 0
     profile = Path(args.profile) if args.profile else daemon.default_profile()
     daemon.unwire_profile(profile)
     print("cliffcompaction disabled: daemon removed, env wiring removed")
     print("  open a new terminal for the env change to take effect")
+    others = [n for n in daemon.installed_names() if n is not None]
+    if others:
+        print(f"  named instances still installed: {', '.join(others)} (cliff disable --name X)")
     return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
     from . import daemon
 
-    port = args.port if args.port is not None else Config.from_env().port
-    installed = daemon.service_installed()
-    running, last_exit = daemon.service_running()
+    name = _instance(args)
+    if name is _BAD_NAME:
+        return 1
+    port = _resolve_port(args, name)
+    installed = daemon.service_installed(name)
+    running, last_exit = daemon.service_running(name)
     status = daemon.probe(port)
-    wired = daemon.profile_is_wired(daemon.default_profile())
+    if name is not None:
+        print(f"instance         : {name}")
     print(f"daemon installed : {'yes' if installed else 'no'}")
     if installed:
         detail = "running" if running else "NOT running"
@@ -315,13 +395,19 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
     else:
         print(f"proxy responding : no (port {port})")
-    print(f"env wired        : {'yes' if wired else 'no'} ({daemon.default_profile()})")
+    if name is None:
+        wired = daemon.profile_is_wired(daemon.default_profile())
+        print(f"env wired        : {'yes' if wired else 'no'} ({daemon.default_profile()})")
+        others = [n for n in daemon.installed_names() if n is not None]
+        if others:
+            print(f"named instances  : {', '.join(others)} (cliff status --name X)")
     if installed and status is None:
-        print(f"hint: check the log at {daemon.log_path()}")
+        print(f"hint: check the log at {daemon.log_path(name)}")
     if installed and not running and status is not None:
         print(
             f"warning: port {port} is answered by another proxy, not the daemon "
-            f"(a manual `cliff serve` still running?); stop it and re-run `cliff enable`"
+            f"(a manual `cliff serve` still running?); stop it and re-run "
+            f"`{_with_name('cliff enable', name)}`"
         )
     if status is not None and (status.get("code_stale") or "code_stale" not in status):
         # Missing field rather than a false one: the daemon predates the check,
@@ -329,7 +415,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(
             "warning: cliffcompaction was installed or changed after the daemon "
             "started, so the daemon is still serving the older code; "
-            "run `cliff restart`"
+            f"run `{_with_name('cliff restart', name)}`"
         )
     return 0
 
@@ -338,12 +424,18 @@ def cmd_restart(args: argparse.Namespace) -> int:
     """Pick up new code without touching the service definition."""
     from . import daemon
 
-    if not daemon.service_installed():
-        print("error: no daemon installed (run `cliff enable` first)", file=sys.stderr)
+    name = _instance(args)
+    if name is _BAD_NAME:
         return 1
-    port = args.port if args.port is not None else Config.from_env().port
+    if not daemon.service_installed(name):
+        print(
+            f"error: no daemon installed (run `{_with_name('cliff enable', name)}` first)",
+            file=sys.stderr,
+        )
+        return 1
+    port = _resolve_port(args, name)
     try:
-        daemon.restart_service()
+        daemon.restart_service(name)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -351,13 +443,14 @@ def cmd_restart(args: argparse.Namespace) -> int:
     if status is None:
         print(
             f"error: daemon did not come back on port {port}; "
-            f"check the log at {daemon.log_path()}",
+            f"check the log at {daemon.log_path(name)}",
             file=sys.stderr,
         )
         return 1
     mode = "shadow" if status.get("shadow") else ("strict" if status.get("strict") else "active")
+    label = "cliff" if name is None else f"cliff[{name}]"
     print(
-        f"cliff restarted on port {port} ({mode} mode, "
+        f"{label} restarted on port {port} ({mode} mode, "
         f"threshold ~{status.get('threshold_tokens', 0) // 1000}k tokens, "
         f"keep_recent={status.get('keep_recent')})"
     )
@@ -386,25 +479,37 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", help="wrap a command behind the proxy")
     _add_common_flags(p_run)
 
+    name_help = "instance name (default: the unnamed daemon that owns the shell env)"
+
     p_enable = sub.add_parser("enable", help="install the supervised daemon + shell env wiring")
     p_enable.add_argument("--port", type=int, default=None)
+    p_enable.add_argument(
+        "--name",
+        default=None,
+        help="install an additional named daemon alongside the default: own --port (required), "
+        "flags and log; no shell env wiring — point your client at its port",
+    )
     p_enable.add_argument("--profile", help="shell profile file to wire (default: auto-detect)")
     p_enable.add_argument("--no-env", action="store_true", help="install the daemon but skip shell env wiring")
     _add_common_flags(p_enable)
 
     p_disable = sub.add_parser("disable", help="remove the daemon and env wiring")
+    p_disable.add_argument("--name", default=None, help=name_help)
     p_disable.add_argument("--profile", help="shell profile file to unwire (default: auto-detect)")
 
     p_status = sub.add_parser("status", help="daemon / env / store health")
     p_status.add_argument("--port", type=int, default=None)
+    p_status.add_argument("--name", default=None, help=name_help)
 
     p_restart = sub.add_parser(
         "restart", help="restart the daemon in place (pick up an upgrade); flags unchanged"
     )
     p_restart.add_argument("--port", type=int, default=None)
+    p_restart.add_argument("--name", default=None, help=name_help)
 
     p_watch = sub.add_parser("watch", help="live view of sessions through the proxy")
     p_watch.add_argument("--port", type=int, default=None)
+    p_watch.add_argument("--name", default=None, help=name_help)
 
     args = parser.parse_args(argv)
     _setup_logging(getattr(args, "verbose", False))

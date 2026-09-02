@@ -15,6 +15,24 @@ cliff enable
 - `cliff restart` — picks up an upgrade, keeping the daemon's flags. A supervised daemon goes on serving the code it started with, so after `uv tool upgrade cliffcompaction` (or any reinstall) the new version does nothing until you run this. `cliff status` warns when that has happened.
 - `cliff disable` — reverses everything.
 
+A second daemon for a client that needs a different upstream or threshold (each instance has its own port, flags and log; `status`, `restart`, `watch` and `disable` all take `--name`):
+
+```bash
+cliff enable --name codex --port 8398 --openai-upstream https://chatgpt.com --threshold 200000
+```
+
+Named instances don't touch your shell env — point the client at the port yourself. For Codex CLI with a ChatGPT login, that is a model provider in `~/.codex/config.toml`. The `model_provider` line is a top-level key, so it must go at the top of the file, above the first `[table]` header — pasted at the end it silently becomes part of whatever table precedes it:
+
+```toml
+model_provider = "cliff"   # at the top of the file, next to `model = ...`
+
+[model_providers.cliff]     # this table can go anywhere
+name = "OpenAI via cliff"
+base_url = "http://127.0.0.1:8398/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = true
+```
+
 For scoped, one-shot use (benchmarks, CI, trying it out):
 
 ```bash

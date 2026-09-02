@@ -3,12 +3,19 @@ systemd --user) plus ANTHROPIC_BASE_URL / OPENAI_BASE_URL wiring in the
 shell profile. The service runs `<python> -m cliffcompaction.cli serve ...`
 with the absolute interpreter path captured at enable time, so PATH does
 not matter.
+
+Instances: the default (unnamed) daemon owns the shell env wiring. Any
+number of named instances can be installed alongside it, each with its own
+port, flags, service label and log; clients that cannot follow the env
+(a Codex model provider, a second upstream) are pointed at a named
+instance's port directly. `name=None` everywhere means the default.
 """
 
 from __future__ import annotations
 
 import os
 import plistlib
+import re
 import subprocess
 import sys
 import time
@@ -20,6 +27,77 @@ LABEL = "com.cliffcompaction.proxy"
 SYSTEMD_UNIT = "cliffcompaction.service"
 MARK_BEGIN = "# >>> cliffcompaction >>>"
 MARK_END = "# <<< cliffcompaction <<<"
+
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
+
+
+# --- instances ------------------------------------------------------------------
+
+
+def validate_name(name: str | None) -> str | None:
+    """Return the name unchanged, or raise: it becomes part of a launchd label,
+    a systemd unit name and a log file name, so keep it to a safe charset."""
+    if name is None or name == "":
+        return None
+    if not _NAME_RE.match(name):
+        raise ValueError(
+            f"invalid instance name {name!r}: use letters, digits, '-' or '_' "
+            "(max 32 chars)"
+        )
+    return name
+
+
+def label(name: str | None = None) -> str:
+    return LABEL if name is None else f"{LABEL}.{name}"
+
+
+def systemd_unit(name: str | None = None) -> str:
+    return SYSTEMD_UNIT if name is None else f"cliffcompaction-{name}.service"
+
+
+def installed_names() -> list[str | None]:
+    """Every installed instance, default first (as None), then named ones sorted."""
+    names: list[str | None] = []
+    if sys.platform == "darwin":
+        folder = Path.home() / "Library" / "LaunchAgents"
+        if plist_path().exists():
+            names.append(None)
+        for p in sorted(folder.glob(f"{LABEL}.*.plist")):
+            names.append(p.name[len(LABEL) + 1 : -len(".plist")])
+    elif sys.platform.startswith("linux"):
+        folder = Path.home() / ".config" / "systemd" / "user"
+        if systemd_unit_path().exists():
+            names.append(None)
+        for p in sorted(folder.glob("cliffcompaction-*.service")):
+            names.append(p.name[len("cliffcompaction-") : -len(".service")])
+    return names
+
+
+def installed_port(name: str | None = None) -> int | None:
+    """The --port baked into the installed service definition, if any."""
+    argv: list[str] | None = None
+    if sys.platform == "darwin":
+        path = plist_path(name)
+        if path.exists():
+            try:
+                argv = plistlib.loads(path.read_bytes()).get("ProgramArguments")
+            except Exception:
+                argv = None
+    elif sys.platform.startswith("linux"):
+        path = systemd_unit_path(name)
+        if path.exists():
+            for line in path.read_text().splitlines():
+                if line.startswith("ExecStart="):
+                    argv = line[len("ExecStart=") :].split()
+    if not argv:
+        return None
+    for i, tok in enumerate(argv):
+        if tok == "--port" and i + 1 < len(argv):
+            try:
+                return int(argv[i + 1])
+            except ValueError:
+                return None
+    return None
 
 
 # --- shell profile wiring -----------------------------------------------------
@@ -113,20 +191,21 @@ def serve_argv(port: int, serve_args: list[str]) -> list[str]:
     ]
 
 
-def log_path() -> Path:
+def log_path(name: str | None = None) -> Path:
+    suffix = "" if name is None else f"-{name}"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Logs" / "cliffcompaction.log"
-    return Path.home() / ".local" / "state" / "cliffcompaction" / "proxy.log"
+        return Path.home() / "Library" / "Logs" / f"cliffcompaction{suffix}.log"
+    return Path.home() / ".local" / "state" / "cliffcompaction" / f"proxy{suffix}.log"
 
 
-def plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+def plist_path(name: str | None = None) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label(name)}.plist"
 
 
-def plist_content(port: int, serve_args: list[str]) -> bytes:
-    log = str(log_path())
+def plist_content(port: int, serve_args: list[str], name: str | None = None) -> bytes:
+    log = str(log_path(name))
     data = {
-        "Label": LABEL,
+        "Label": label(name),
         "ProgramArguments": serve_argv(port, serve_args),
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -136,15 +215,16 @@ def plist_content(port: int, serve_args: list[str]) -> bytes:
     return plistlib.dumps(data)
 
 
-def systemd_unit_path() -> Path:
-    return Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT
+def systemd_unit_path(name: str | None = None) -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / systemd_unit(name)
 
 
-def systemd_unit_content(port: int, serve_args: list[str]) -> str:
+def systemd_unit_content(port: int, serve_args: list[str], name: str | None = None) -> str:
     exec_start = " ".join(serve_argv(port, serve_args))
+    desc = "CliffCompaction proxy" if name is None else f"CliffCompaction proxy ({name})"
     return (
         "[Unit]\n"
-        "Description=CliffCompaction proxy\n\n"
+        f"Description={desc}\n\n"
         "[Service]\n"
         f"ExecStart={exec_start}\n"
         "Restart=always\n"
@@ -165,14 +245,16 @@ def _gui_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def start_service(port: int, serve_args: list[str]) -> None:
+def start_service(port: int, serve_args: list[str], name: str | None = None) -> None:
+    lbl = label(name)
+    unit = systemd_unit(name)
     if sys.platform == "darwin":
-        path = plist_path()
+        path = plist_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        log_path().parent.mkdir(parents=True, exist_ok=True)
+        log_path(name).parent.mkdir(parents=True, exist_ok=True)
         # Refresh: bootout any existing instance first (ignore failures).
-        _run(["launchctl", "bootout", f"{_gui_domain()}/{LABEL}"])
-        path.write_bytes(plist_content(port, serve_args))
+        _run(["launchctl", "bootout", f"{_gui_domain()}/{lbl}"])
+        path.write_bytes(plist_content(port, serve_args, name))
         # bootout is asynchronous: launchd may still hold the label when the
         # bootstrap arrives, which fails with "Bootstrap failed: 5: Input/
         # output error". Retry briefly instead of surfacing that to the user.
@@ -181,18 +263,18 @@ def start_service(port: int, serve_args: list[str]) -> None:
             if res.returncode == 0:
                 break
             time.sleep(0.3)
-            _run(["launchctl", "bootout", f"{_gui_domain()}/{LABEL}"])
+            _run(["launchctl", "bootout", f"{_gui_domain()}/{lbl}"])
             res = _run(["launchctl", "bootstrap", _gui_domain(), str(path)])
         if res.returncode != 0:
             raise RuntimeError(f"launchctl bootstrap failed: {res.stderr.strip()}")
     elif sys.platform.startswith("linux"):
-        path = systemd_unit_path()
+        path = systemd_unit_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(systemd_unit_content(port, serve_args))
+        path.write_text(systemd_unit_content(port, serve_args, name))
         for cmd in (
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT],
-            ["systemctl", "--user", "restart", SYSTEMD_UNIT],
+            ["systemctl", "--user", "enable", "--now", unit],
+            ["systemctl", "--user", "restart", unit],
         ):
             res = _run(cmd)
             if res.returncode != 0:
@@ -204,7 +286,7 @@ def start_service(port: int, serve_args: list[str]) -> None:
         )
 
 
-def restart_service() -> None:
+def restart_service(name: str | None = None) -> None:
     """Restart the installed service in place, leaving the plist/unit alone.
 
     Distinct from `enable`, which rewrites the service definition: the flags
@@ -212,36 +294,36 @@ def restart_service() -> None:
     silently reset them.
     """
     if sys.platform == "darwin":
-        res = _run(["launchctl", "kickstart", "-k", f"{_gui_domain()}/{LABEL}"])
+        res = _run(["launchctl", "kickstart", "-k", f"{_gui_domain()}/{label(name)}"])
         if res.returncode != 0:
             raise RuntimeError(f"launchctl kickstart failed: {res.stderr.strip()}")
     elif sys.platform.startswith("linux"):
-        res = _run(["systemctl", "--user", "restart", SYSTEMD_UNIT])
+        res = _run(["systemctl", "--user", "restart", systemd_unit(name)])
         if res.returncode != 0:
             raise RuntimeError(f"systemctl restart failed: {res.stderr.strip()}")
     else:
         raise RuntimeError(f"unsupported platform: {sys.platform}")
 
 
-def stop_service() -> None:
+def stop_service(name: str | None = None) -> None:
     if sys.platform == "darwin":
-        _run(["launchctl", "bootout", f"{_gui_domain()}/{LABEL}"])
-        plist_path().unlink(missing_ok=True)
+        _run(["launchctl", "bootout", f"{_gui_domain()}/{label(name)}"])
+        plist_path(name).unlink(missing_ok=True)
     elif sys.platform.startswith("linux"):
-        _run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT])
-        systemd_unit_path().unlink(missing_ok=True)
+        _run(["systemctl", "--user", "disable", "--now", systemd_unit(name)])
+        systemd_unit_path(name).unlink(missing_ok=True)
         _run(["systemctl", "--user", "daemon-reload"])
 
 
-def service_installed() -> bool:
+def service_installed(name: str | None = None) -> bool:
     if sys.platform == "darwin":
-        return plist_path().exists()
+        return plist_path(name).exists()
     if sys.platform.startswith("linux"):
-        return systemd_unit_path().exists()
+        return systemd_unit_path(name).exists()
     return False
 
 
-def service_running() -> tuple[bool, int | None]:
+def service_running(name: str | None = None) -> tuple[bool, int | None]:
     """(running, last_exit_status) for the installed service.
 
     A plist/unit on disk says nothing about the service actually running: a
@@ -249,10 +331,11 @@ def service_running() -> tuple[bool, int | None]:
     probe() still gets healthy answers from the squatter.
     """
     if sys.platform == "darwin":
+        lbl = label(name)
         res = _run(["launchctl", "list"])
         for line in res.stdout.splitlines():
             parts = line.split("\t")
-            if len(parts) >= 3 and parts[2].strip() == LABEL:
+            if len(parts) >= 3 and parts[2].strip() == lbl:
                 pid = None if parts[0].strip() == "-" else int(parts[0])
                 try:
                     last = int(parts[1])
@@ -261,7 +344,7 @@ def service_running() -> tuple[bool, int | None]:
                 return pid is not None, last
         return False, None
     if sys.platform.startswith("linux"):
-        res = _run(["systemctl", "--user", "is-active", SYSTEMD_UNIT])
+        res = _run(["systemctl", "--user", "is-active", systemd_unit(name)])
         return res.stdout.strip() == "active", None
     return False, None
 
