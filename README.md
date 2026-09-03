@@ -33,6 +33,12 @@ wire_api = "responses"
 requires_openai_auth = true
 ```
 
+To run a single session without the proxy while keeping it enabled for everything else, drop the env var for just that process:
+
+```bash
+env -u ANTHROPIC_BASE_URL claude                 # OpenAI-side clients: -u OPENAI_BASE_URL -u OPENAI_API_BASE
+```
+
 For scoped, one-shot use (benchmarks, CI, trying it out):
 
 ```bash
