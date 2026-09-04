@@ -391,7 +391,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             f"proxy responding : yes on port {port} ({mode} mode, "
             f"threshold ~{status.get('threshold_tokens', 0) // 1000}k tokens, "
             f"keep_recent={status.get('keep_recent')}, "
-            f"store entries={status.get('store_entries')})"
+            f"store entries={status.get('store_entries')} "
+            f"({status.get('store_bytes', 0) / 1e6:.1f}MB))"
         )
     else:
         print(f"proxy responding : no (port {port})")

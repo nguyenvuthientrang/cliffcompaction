@@ -506,6 +506,7 @@ def create_app(
                 "threshold_tokens": cfg.threshold_tokens,
                 "keep_recent": cfg.keep_recent,
                 "store_entries": len(engine.store),
+                "store_bytes": engine.store.nbytes,
                 "sessions_tracked": len(seen_sids),
                 # Installed under a running daemon: it is still serving the
                 # code it started with, and looks perfectly healthy doing it.

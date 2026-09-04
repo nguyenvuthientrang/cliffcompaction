@@ -80,7 +80,13 @@ class RequestCtx:
 class Engine:
     def __init__(self, cfg: Config, store: PrefixStore | None = None):
         self.cfg = cfg
-        self.store = store or PrefixStore(cfg.store_max_entries)
+        # `is not None`, not `or`: PrefixStore defines __len__, so an empty
+        # store passed by a caller is falsy and would be silently replaced.
+        self.store = (
+            store
+            if store is not None
+            else PrefixStore(cfg.store_max_entries, cfg.store_max_bytes)
+        )
 
     # ------------------------------------------------------------- pipeline
 

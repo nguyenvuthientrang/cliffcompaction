@@ -72,7 +72,10 @@ class Config:
     port: int = 8257
 
     # --- state store ---
+    # Size is the binding limit; the entry count is a backstop. Both are
+    # cache bounds, not correctness ones: an evicted prefix is recomputed.
     store_max_entries: int = 4096
+    store_max_bytes: int = 64 * 1024 * 1024
 
     extra: dict = field(default_factory=dict)
 
@@ -99,4 +102,5 @@ class Config:
             host=os.environ.get("CLIFF_HOST", "127.0.0.1"),
             port=_env_int("CLIFF_PORT", 8257),
             store_max_entries=_env_int("CLIFF_STORE_MAX_ENTRIES", 4096),
+            store_max_bytes=_env_int("CLIFF_STORE_MAX_BYTES", 64 * 1024 * 1024),
         )
