@@ -39,6 +39,12 @@ To run a single session without the proxy while keeping it enabled for everythin
 env -u ANTHROPIC_BASE_URL claude                 # OpenAI-side clients: -u OPENAI_BASE_URL -u OPENAI_API_BASE
 ```
 
+Codex routes by `model_provider` in `config.toml` rather than an env var, so there is nothing to unset — override the key for one invocation instead:
+
+```bash
+codex -c model_provider=openai                   # and again on resume: codex -c model_provider=openai resume --last
+```
+
 For scoped, one-shot use (benchmarks, CI, trying it out):
 
 ```bash

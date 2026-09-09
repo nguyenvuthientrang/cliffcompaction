@@ -24,6 +24,7 @@ from .cliff import compact
 from .config import Config
 from .dialects.base import SUMMARY_HEADER, Dialect
 from .hashing import chain_hashes
+from .images import image_payloads, tokens_for_payload
 from .store import Entry, PrefixStore
 
 logger = logging.getLogger("cliffcompaction")
@@ -36,11 +37,22 @@ def _summary_fingerprint(summary: dict) -> str:
 
 
 def estimate_tokens(body: dict) -> int:
-    """chars/4 estimate over the full serialized request body."""
+    """chars/4 over the serialized request body, image blocks counted by size.
+
+    Base64 is excluded from the character count and replaced by a per-image
+    estimate; see images.py for why length is the wrong unit for a picture.
+    Base64 needs no JSON escaping, so a payload's serialized length is its
+    own length plus the two quotes, which stay in the count.
+    """
     try:
-        return len(json.dumps(body, ensure_ascii=False)) // 4
+        chars = len(json.dumps(body, ensure_ascii=False))
     except (TypeError, ValueError):
         return 0
+    image_tokens = 0
+    for payload in image_payloads(body):
+        chars -= len(payload)
+        image_tokens += tokens_for_payload(payload)
+    return max(chars, 0) // 4 + image_tokens
 
 
 @dataclass
