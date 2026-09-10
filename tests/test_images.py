@@ -163,3 +163,41 @@ def test_many_screenshots_stay_in_a_sane_range():
     est = estimate_tokens(body)
     assert 32 * 2_000 < est < 32 * MAX_IMAGE_TOKENS
     assert est < 200_000
+
+
+# --- the trigger and the replay loop must price a message identically -------
+#
+# Regression for a live incident: estimate_tokens() was made image-aware while
+# Engine._msg_chars() still counted base64 in full. The trigger fired at the
+# right size, then the replay walked the same history at ~360x per image and
+# found a crossing every few messages -- 54 compaction generations on a real
+# 228-message session, cutting it to 17. Re-compaction is flat, so every
+# generation discarded the previous one's content instead of summarizing it.
+
+
+def test_msg_chars_matches_billable_chars():
+    """The replay loop's per-message unit is the estimator's, plus separator."""
+    from cliffcompaction.engine import Engine, billable_chars
+
+    uri = data_uri(png_bytes(1536, 1024, payload_bytes=400_000))
+    msg = {"role": "user", "content": [{"type": "image", "source": {"data": uri}}]}
+    assert Engine._msg_chars(msg) == billable_chars(msg) + 2
+
+
+def test_replay_accounting_agrees_with_the_trigger():
+    """Summing per-message cost must not exceed the whole-body estimate.
+
+    Under the bug this failed by ~360x per image: the parts were counted at
+    base64 length while the whole was counted by dimensions.
+    """
+    from cliffcompaction.engine import Engine
+
+    uri = data_uri(png_bytes(1536, 1024, payload_bytes=400_000))
+    msgs = [
+        {"role": "user", "content": [{"type": "image", "source": {"data": uri}}]}
+        for _ in range(8)
+    ]
+    body = {"model": "m", "messages": msgs}
+    per_msg_tokens = sum(Engine._msg_chars(m) for m in msgs) // 4
+    assert per_msg_tokens <= estimate_tokens(body) + 8
+    assert per_msg_tokens < 8 * MAX_IMAGE_TOKENS + 1_000

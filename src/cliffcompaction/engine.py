@@ -36,23 +36,32 @@ def _summary_fingerprint(summary: dict) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 
-def estimate_tokens(body: dict) -> int:
-    """chars/4 over the serialized request body, image blocks counted by size.
+def billable_chars(obj: dict) -> int:
+    """Serialized length of `obj`, with image payloads priced by dimensions.
 
-    Base64 is excluded from the character count and replaced by a per-image
-    estimate; see images.py for why length is the wrong unit for a picture.
-    Base64 needs no JSON escaping, so a payload's serialized length is its
-    own length plus the two quotes, which stay in the count.
+    The unit is characters so callers can compare against a chars/4 budget:
+    an image contributes its estimated tokens x4 instead of its base64
+    length. Base64 needs no JSON escaping, so a payload's serialized length
+    is its own length plus the two quotes, which stay in the count.
+
+    Every size decision must come through here. The trigger and the replay
+    loop that reproduces past trigger points have to agree on what a message
+    costs; when they don't, the replay finds crossings the trigger never saw
+    and compacts at the wrong depths.
     """
     try:
-        chars = len(json.dumps(body, ensure_ascii=False))
+        chars = len(json.dumps(obj, ensure_ascii=False))
     except (TypeError, ValueError):
         return 0
-    image_tokens = 0
-    for payload in image_payloads(body):
+    for payload in image_payloads(obj):
         chars -= len(payload)
-        image_tokens += tokens_for_payload(payload)
-    return max(chars, 0) // 4 + image_tokens
+        chars += tokens_for_payload(payload) * 4
+    return max(chars, 0)
+
+
+def estimate_tokens(body: dict) -> int:
+    """chars/4 over the serialized request body, image blocks counted by size."""
+    return billable_chars(body) // 4
 
 
 @dataclass
@@ -277,10 +286,8 @@ class Engine:
 
     @staticmethod
     def _msg_chars(msg: dict) -> int:
-        try:
-            return len(json.dumps(msg, ensure_ascii=False)) + 2
-        except (TypeError, ValueError):
-            return 0
+        # +2 for the separator this message adds to the serialized array.
+        return billable_chars(msg) + 2
 
     def _compact_chain(
         self,
@@ -304,14 +311,7 @@ class Engine:
         cfg = self.cfg
         knobs = compact_cfg or cfg
         msgs = ctx.msgs
-        try:
-            fixed_chars = len(
-                json.dumps(
-                    {**ctx.body, ctx.dialect.messages_key: []}, ensure_ascii=False
-                )
-            )
-        except (TypeError, ValueError):
-            fixed_chars = 0
+        fixed_chars = billable_chars({**ctx.body, ctx.dialect.messages_key: []})
         threshold_chars = cfg.threshold_tokens * 4
 
         # Working state: working == replacement + msgs[orig_cut:fed], where
