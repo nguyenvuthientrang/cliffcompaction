@@ -70,3 +70,9 @@ class Dialect:
     # messages must precede an assistant message or end the array). Matching
     # messages are trimmed off the head into the compacted region.
     trim_from_head: Callable[[dict], bool] | None = None
+    # How many user messages a session's opening turn may carry, above which
+    # a request with no model turn is a scaffold side call rather than a first
+    # turn. Display only (`cliff watch`). One for a client that sends just the
+    # person's message; Codex prepends an <environment_context> message, so a
+    # genuine Responses opening turn carries two.
+    opening_user_messages: int = 1

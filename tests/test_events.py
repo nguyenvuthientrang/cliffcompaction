@@ -419,8 +419,11 @@ def test_side_call_rule_across_dialects():
          [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
          [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]),
         (openai_responses.DIALECT,
+         # Codex's opening turn is already two user messages, so a side call
+         # in this dialect has to clear a higher bar.
          [{"type": "message", "role": "user", "content": "a"},
-          {"type": "message", "role": "user", "content": "b"}],
+          {"type": "message", "role": "user", "content": "b"},
+          {"type": "message", "role": "user", "content": "c"}],
          # a model turn need not be an assistant message in this dialect
          [{"type": "message", "role": "user", "content": "a"},
           {"type": "function_call", "call_id": "c", "name": "bash", "arguments": "{}"}]),
@@ -433,6 +436,29 @@ def test_side_call_rule_across_dialects():
         # One user message: an opening turn until the session has spoken.
         assert not is_side_call(side[:1], dialect, seen=False), dialect.name
         assert is_side_call(side[:1], dialect, seen=True), dialect.name
+
+
+def test_codex_opening_turn_is_a_turn_not_a_side_call():
+    """Codex prepends <environment_context> to the person's first message.
+
+    Both requests below are seven items with two user messages -- the real
+    opening turn and the title-generation call Codex fires beside it are
+    structurally identical, so only order separates them. Counting user
+    messages alone classified the opening turn as a side call, which then
+    never marked the session seen, so the side call escaped too.
+    """
+    from cliffcompaction.dialects import openai_responses
+    from cliffcompaction.proxy import is_side_call
+
+    dialect = openai_responses.DIALECT
+    opening = [
+        {"type": "message", "role": "developer", "content": "You are Codex"},
+        {"type": "message", "role": "user", "content": "<environment_context>…"},
+        {"type": "message", "role": "user", "content": "Hello!"},
+    ]
+    assert not is_side_call(opening, dialect, seen=False)
+    # Same shape once the session has spoken: the title-generation call.
+    assert is_side_call(opening, dialect, seen=True)
 
 
 def test_identity_work_can_never_break_a_request(monkeypatch):

@@ -235,6 +235,9 @@ DIALECT = Dialect(
     user_message=user_message,
     is_summary_message=is_summary_message,
     session_key=session_key,
+    # Codex prepends an <environment_context> user message to the person's
+    # own first message, so a genuine opening turn carries two.
+    opening_user_messages=2,
     messages_key="input",
     group_turns=group_turns,
 )

@@ -95,19 +95,21 @@ def is_side_call(msgs: list[dict], dialect, seen: bool) -> bool:
 
     A session's opening turn has no model turn either, and must not be swept up
     here: it is what puts a new session on screen. Two signals separate them.
-    An opening turn carries exactly one user message ([user] or [user, in-array
-    system directive]), so two or more is proof of something else — Claude
-    Code's permission classifier, a fixed instruction and a growing transcript,
-    is the volume case. And a session that has already spoken cannot be opening
-    again, which catches the single-message background calls that shape alone
-    cannot distinguish from a first turn.
+    An opening turn carries at most `dialect.opening_user_messages` user
+    messages, so more than that is proof of something else — Claude Code's
+    permission classifier, a fixed instruction and a growing transcript, is the
+    volume case. And a session that has already spoken cannot be opening again,
+    which catches the background calls that shape alone cannot distinguish from
+    a first turn: Codex fires title generation at session start in exactly the
+    opening turn's shape, and only order tells them apart.
     """
     try:
         if any(dialect.is_assistant(m) for m in msgs):
             return False
         if seen:
             return True
-        return sum(1 for m in msgs if m.get("role") == "user") >= 2
+        n_user = sum(1 for m in msgs if m.get("role") == "user")
+        return n_user > dialect.opening_user_messages
     except Exception:
         return False  # unknown shape: treat it as a session
 

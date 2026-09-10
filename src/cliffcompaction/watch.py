@@ -226,7 +226,13 @@ class Watcher:
             mark = t.c(YELLOW, "⚡ compact ", bold=True)
             return "  " + t.c(DIM, clock) + " " + t.c(BRAND, sid) + "  " + mark + t.c(TEXT, body)
         if kind == "match":
-            body = f"depth {ev.get('cut')}/{ev.get('total')}".ljust(20) + f"{kfmt(ev.get('est_out') or 0)} est"
+            # Same two numbers a compact line shows, in the same order: what
+            # the client sent, and what the substitution sends on. Reporting
+            # only the second reads as a size jump next to a compact line and
+            # hides the saving, which on a match is the whole point.
+            body = f"depth {ev.get('cut')}/{ev.get('total')}".ljust(20) + (
+                f"{kfmt(ev.get('est_in') or 0)} → {kfmt(ev.get('est_out') or 0)} est"
+            )
             return ("  " + t.c(DIM, clock) + " " + t.c(FAINT, sid) + "  "
                     + t.c(BRAND, "· match   ") + t.c(DIM, body))
         body = f"{ev.get('total')} msgs".ljust(20) + f"{kfmt(ev.get('est_in') or 0)} est"
