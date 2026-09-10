@@ -6,14 +6,28 @@ A transparent API proxy implementing CliffCompaction.
 
 ```bash
 uv tool install cliffcompaction   # or: pip install cliffcompaction
+```
 
+Or, from a clone:
+
+```bash
+uv tool install --force --editable .   # or: pip install -e .
+```
+
+Then:
+
+```bash
 cliff enable                      # defaults to Claude Code
 ```
 
-Installs a supervised user service (launchd on macOS, systemd --user on Linux) and adds `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `OPENAI_API_BASE` (legacy SDKs) to your shell profile. Open a new terminal.
+Installs a supervised user service (launchd on macOS, systemd --user on Linux) and adds `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `OPENAI_API_BASE` (legacy SDKs) to your shell profile.
+
+Open a new terminal and run your agent as usual — `claude`, or anything reading those variables.
+
+Other commands:
 
 - `cliff status` — health.
-- `cliff restart` — picks up an upgrade, keeping the daemon's flags. A running daemon keeps serving the code it started with, so `uv tool upgrade` changes nothing until you restart; `cliff status` warns when that has happened.
+- `cliff restart` — picks up an upgrade, keeping the daemon's flags. A running daemon keeps serving the code it started with, so an upgrade changes nothing until you restart; `cliff status` warns when that has happened.
 - `cliff watch` — live view of requests, matches and compactions (recommended for Claude Code and Codex CLI; other scaffolds compact normally, but the watch display may mislabel).
 - `cliff disable` — reverses everything.
 
