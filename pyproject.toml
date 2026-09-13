@@ -21,6 +21,18 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/cliffcompaction"]
 
+# Allowlist, not a denylist: an sdist is public and permanent, so nothing ships
+# unless it is named here.
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/cliffcompaction",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+    "uv.lock",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
