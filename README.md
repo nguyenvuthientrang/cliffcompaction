@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.gif" alt="CliffCompaction" width="100%">
+  <img src="docs/banner.gif" alt="CliffCompaction" width="700">
 </p>
 
 # CliffCompaction
