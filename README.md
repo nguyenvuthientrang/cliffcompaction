@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/banner.gif" alt="CliffCompaction" width="700">
+</p>
+
 # CliffCompaction
 
 Autocompaction for coding agents, as a transparent API proxy. Point an agent's base URL at it and long sessions stay under a token budget — the agent is unchanged and unaware.
@@ -5,7 +9,7 @@ Autocompaction for coding agents, as a transparent API proxy. Point an agent's b
 ## Quick start
 
 ```bash
-uv tool install cliffcompaction   # or: pip install cliffcompaction
+uv tool install cliffcompaction        # or: pip install cliffcompaction
 ```
 
 Or, from a clone:
@@ -14,13 +18,11 @@ Or, from a clone:
 uv tool install --force --editable .   # or: pip install -e .
 ```
 
-Then:
+Then start the proxy — this adds the base-URL variables to your shell profile and installs a background service (launchd on macOS, systemd --user on Linux):
 
 ```bash
-cliff enable                      # defaults to Claude Code
+cliff enable                           # defaults to Claude Code
 ```
-
-Installs a supervised user service (launchd on macOS, systemd --user on Linux) and adds `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `OPENAI_API_BASE` (legacy SDKs) to your shell profile.
 
 Open a new terminal and run your agent as usual — `claude`, or anything reading those variables.
 
@@ -142,7 +144,7 @@ Re-compaction **drops** the previous summary.
 
 | Flag / env var                                      | Default                                                                       | Meaning                                                                                                             |
 | --------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `--threshold` / `CLIFF_THRESHOLD_TOKENS`            | 200000                                                                        | compaction trigger, in estimated tokens — the estimate runs ~15% under a provider's own count on code. The default suits 1M-context models; use a smaller value on 200–250k ones |
+| `--threshold` / `CLIFF_THRESHOLD_TOKENS`            | 200000                                                                        | compaction trigger, in estimated tokens. The default suits 1M-context models; on 200–250k ones use 100000–128000 |
 | `--keep-recent` / `CLIFF_KEEP_RECENT`               | 3                                                                             | recent assistant-step turns kept verbatim                                                                           |
 | `--thought-max-chars` / `CLIFF_THOUGHT_MAX_CHARS`   | 0 (unlimited)                                                                 | cap on assistant text in summaries                                                                                  |
 | `--thinking-max-chars` / `CLIFF_THINKING_MAX_CHARS` | 0 (unlimited)                                                                 | cap on thinking text, independent of the thought cap                                                                |
