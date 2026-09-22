@@ -1,6 +1,6 @@
 # CliffCompaction
 
-A transparent API proxy implementing CliffCompaction.
+Autocompaction for coding agents, as a transparent API proxy. Point an agent's base URL at it and long sessions stay under a token budget — the agent is unchanged and unaware.
 
 ## Quick start
 
@@ -106,7 +106,8 @@ export OPENAI_BASE_URL=http://127.0.0.1:8257/v1
 
 **Important:** disable your scaffold's own compaction. Under the proxy it sees small prompt counts, so its triggers generally won't fire anyway — but some rewrite history in place, which breaks the prefix matching CliffCompaction relies on.
 
-## How it works
+<details>
+<summary><h2>How it works</h2></summary>
 
 Every request an agent sends is `history + latest step`. The proxy:
 
@@ -132,7 +133,11 @@ Re-compaction **drops** the previous summary.
 
 **Fail-open contract:** any failure — unparseable body, no prefix match, store error — means verbatim passthrough.
 
-## Configuration
+</details>
+
+<details>
+<summary><h2>Configuration</h2></summary>
+
 
 
 | Flag / env var                                      | Default                                                                       | Meaning                                                                                                             |
@@ -153,10 +158,21 @@ Re-compaction **drops** the previous summary.
 
 Supported dialects: **Anthropic Messages** (`/v1/messages`), **OpenAI Chat Completions** (`/chat/completions`) and **OpenAI Responses** (`/responses`), native tool calling. Everything else passes through verbatim, to the Anthropic upstream — or to the OpenAI one when that is the only upstream configured.
 
-## Development
+</details>
+
+<details>
+<summary><h2>Development</h2></summary>
+
+Python 3.11+.
 
 ```bash
 uv sync
 uv run pytest
 ```
+
+</details>
+
+## Citation
+
+Paper link and BibTeX to follow.
 
