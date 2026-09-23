@@ -25,6 +25,7 @@ dependencies = [
 Homepage = "https://github.com/nguyenvuthientrang/cliffcompaction"
 Repository = "https://github.com/nguyenvuthientrang/cliffcompaction"
 Issues = "https://github.com/nguyenvuthientrang/cliffcompaction/issues"
+Paper = "https://arxiv.org/abs/2609.26779"
 
 [project.scripts]
 cliff = "cliffcompaction.cli:main"

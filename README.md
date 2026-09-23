@@ -176,5 +176,14 @@ uv run pytest
 
 ## Citation
 
-Paper link and BibTeX to follow.
+[CliffCompaction: Cost-Efficient Compaction for Long-Horizon Coding Agents](https://arxiv.org/abs/2609.26779)
+
+```bibtex
+@article{nguyen2026cliffcompaction,
+  title   = {CliffCompaction: Cost-Efficient Compaction for Long-Horizon Coding Agents},
+  author  = {Nguyen, Trang and Cho, Eulrang and Chen, Bingqing and Dettmers, Tim},
+  journal = {arXiv preprint arXiv:2609.26779},
+  year    = {2026}
+}
+```
 
